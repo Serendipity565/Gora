@@ -1,0 +1,11 @@
+/.idea
+/.vscode
+
+.claude/
+.codex
+
+/bin
+/config/config.yaml
+.cache/
+.gocache/
+*.log
