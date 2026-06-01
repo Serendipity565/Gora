@@ -12,13 +12,14 @@ import (
 	"time"
 )
 
-// DeepSeekConfig configures the DeepSeek OpenAI-compatible API client.
+// DeepSeekConfig 是 DeepSeek 兼容接口的客户端配置。
 type DeepSeekConfig struct {
-	APIKey  string
-	BaseURL string
-	Model   string
+	APIKey  string // DeepSeek 接口密钥
+	BaseURL string // 接口基础地址，默认 https://api.deepseek.com
+	Model   string // 模型名称，如 deepseek-chat 或 deepseek-reasoner
 }
 
+// DefaultDeepSeekConfig 返回 DeepSeek 默认配置。
 func DefaultDeepSeekConfig(apiKey string) DeepSeekConfig {
 	return DeepSeekConfig{
 		APIKey:  apiKey,
@@ -27,12 +28,13 @@ func DefaultDeepSeekConfig(apiKey string) DeepSeekConfig {
 	}
 }
 
-// DeepSeekLLM adapts DeepSeek's chat completions API to the LLM interface.
+// DeepSeekLLM 将 DeepSeek 聊天补全接口适配到 LLM 接口。
 type DeepSeekLLM struct {
 	config DeepSeekConfig
 	client *http.Client
 }
 
+// NewDeepSeekLLM 创建 DeepSeek LLM 客户端。
 func NewDeepSeekLLM(config DeepSeekConfig) *DeepSeekLLM {
 	if config.BaseURL == "" {
 		config.BaseURL = "https://api.deepseek.com"
@@ -47,6 +49,7 @@ func NewDeepSeekLLM(config DeepSeekConfig) *DeepSeekLLM {
 	}
 }
 
+// chatRequest 是 DeepSeek 和 OpenAI 兼容的聊天请求体。
 type chatRequest struct {
 	Model    string           `json:"model"`
 	Messages []Message        `json:"messages"`
@@ -54,6 +57,7 @@ type chatRequest struct {
 	Stream   bool             `json:"stream"`
 }
 
+// chatResponse 是 DeepSeek 和 OpenAI 兼容的非流式响应体。
 type chatResponse struct {
 	Choices []struct {
 		Message struct {
@@ -65,6 +69,7 @@ type chatResponse struct {
 	} `json:"choices"`
 }
 
+// Chat 发起一次非流式聊天请求。
 func (d *DeepSeekLLM) Chat(ctx context.Context, messages []Message, tools []map[string]any) (*Message, error) {
 	reqBody := chatRequest{
 		Model:    d.config.Model,
@@ -118,6 +123,7 @@ func (d *DeepSeekLLM) Chat(ctx context.Context, messages []Message, tools []map[
 	}, nil
 }
 
+// ChatStream 发起一次流式聊天请求，并把服务器发送事件转换成 StreamChunk。
 func (d *DeepSeekLLM) ChatStream(ctx context.Context, messages []Message, tools []map[string]any) <-chan StreamChunk {
 	ch := make(chan StreamChunk, 64)
 
@@ -160,6 +166,7 @@ func (d *DeepSeekLLM) ChatStream(ctx context.Context, messages []Message, tools 
 			return
 		}
 
+		// DeepSeek 流式响应使用服务器发送事件，每一行 data 都是一段增量 JSON。
 		scanner := bufio.NewScanner(resp.Body)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
@@ -222,10 +229,12 @@ func (d *DeepSeekLLM) ChatStream(ctx context.Context, messages []Message, tools 
 	return ch
 }
 
+// chatCompletionsURL 拼接当前配置下的聊天补全接口地址。
 func (d *DeepSeekLLM) chatCompletionsURL() string {
 	return strings.TrimRight(d.config.BaseURL, "/") + "/v1/chat/completions"
 }
 
+// mergeToolCalls 合并流式返回中的工具调用增量。
 func mergeToolCalls(existing, incoming []ToolCall) []ToolCall {
 	for _, inc := range incoming {
 		i := findToolCall(existing, inc)
@@ -250,6 +259,7 @@ func mergeToolCalls(existing, incoming []ToolCall) []ToolCall {
 	return existing
 }
 
+// findToolCall 在已累积的工具调用中查找同一个调用。
 func findToolCall(existing []ToolCall, incoming ToolCall) int {
 	if incoming.Index != nil {
 		for i, ex := range existing {

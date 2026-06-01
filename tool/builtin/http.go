@@ -9,24 +9,29 @@ import (
 	"time"
 )
 
+// HTTPTool 是内置 HTTP 请求工具。
 type HTTPTool struct {
 	client *http.Client
 }
 
+// NewHTTPTool 创建一个带默认超时时间的 HTTP 工具。
 func NewHTTPTool() *HTTPTool {
 	return &HTTPTool{
 		client: &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
+// Name 返回工具名称。
 func (h *HTTPTool) Name() string {
 	return "http_request"
 }
 
+// Description 返回工具说明，供 LLM 选择工具时参考。
 func (h *HTTPTool) Description() string {
 	return "发送 HTTP 请求到指定 URL，支持 GET/POST 等方法"
 }
 
+// Parameters 返回工具参数的 JSON 模式定义。
 func (h *HTTPTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -49,6 +54,7 @@ func (h *HTTPTool) Parameters() map[string]any {
 	}
 }
 
+// Execute 按参数发起 HTTP 请求，并返回状态码和响应体摘要。
 func (h *HTTPTool) Execute(ctx context.Context, args map[string]any) (string, error) {
 	url, ok := args["url"].(string)
 	if !ok || url == "" {
@@ -65,6 +71,7 @@ func (h *HTTPTool) Execute(ctx context.Context, args map[string]any) (string, er
 		body = strings.NewReader(b)
 	}
 
+	// 请求绑定 ctx，方便上层取消 Agent 运行时中断网络调用。
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return "", fmt.Errorf("创建请求失败: %w", err)
@@ -80,6 +87,7 @@ func (h *HTTPTool) Execute(ctx context.Context, args map[string]any) (string, er
 	}
 	defer resp.Body.Close()
 
+	// 限制响应大小，避免工具结果过大影响后续 LLM 上下文。
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	if err != nil {
 		return "", fmt.Errorf("读取响应失败: %w", err)

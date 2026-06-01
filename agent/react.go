@@ -12,14 +12,15 @@ import (
 	"github.com/Serendipity565/gora/tool"
 )
 
-// ReActConfig configures a ReAct Agent.
+// ReActConfig 是 ReAct Agent 的运行配置。
 type ReActConfig struct {
-	LLM          llm.LLM
-	Tools        *tool.Registry
-	SystemPrompt string
-	MaxSteps     int
+	LLM          llm.LLM        // 用于推理和决策的大模型客户端
+	Tools        *tool.Registry // Agent 可调用的工具注册表
+	SystemPrompt string         // 系统提示词，定义 Agent 的行为边界
+	MaxSteps     int            // 最大思考轮数，防止无限循环
 }
 
+// DefaultReActConfig 返回一份适合普通助手场景的默认 ReAct 配置。
 func DefaultReActConfig(llmClient llm.LLM, tools *tool.Registry) ReActConfig {
 	return ReActConfig{
 		LLM:   llmClient,
@@ -31,7 +32,7 @@ func DefaultReActConfig(llmClient llm.LLM, tools *tool.Registry) ReActConfig {
 	}
 }
 
-// ReActAgent implements the reason-act-observe loop.
+// ReActAgent 实现“思考-行动-观察”的 ReAct 循环。
 type ReActAgent struct {
 	*BaseAgent
 	config ReActConfig
@@ -40,6 +41,7 @@ type ReActAgent struct {
 	messages   []llm.Message
 }
 
+// NewReActAgent 创建一个 ReAct Agent，并补齐必要的默认配置。
 func NewReActAgent(id string, config ReActConfig) *ReActAgent {
 	if config.Tools == nil {
 		config.Tools = tool.NewRegistry()
@@ -54,6 +56,7 @@ func NewReActAgent(id string, config ReActConfig) *ReActAgent {
 	}
 }
 
+// Run 执行一轮 ReAct 循环，并通过事件通道持续返回思考、工具调用和回答片段。
 func (a *ReActAgent) Run(ctx context.Context, input string) <-chan Event {
 	events := make(chan Event, 32)
 	stopCh, doneCh := a.beginRun()
@@ -80,6 +83,7 @@ func (a *ReActAgent) Run(ctx context.Context, input string) <-chan Event {
 			return
 		}
 
+		// 每一轮都基于历史消息和当前用户输入构造上下文。
 		messages := a.prepareMessages(input)
 
 		for step := 0; step < a.config.MaxSteps; step++ {
@@ -97,6 +101,7 @@ func (a *ReActAgent) Run(ctx context.Context, input string) <-chan Event {
 				return
 			}
 
+			// 把本地工具注册表转换成 OpenAI/DeepSeek 兼容的工具定义。
 			toolSchemas := a.config.Tools.ToOpenAISchema()
 			resp, err := a.config.LLM.Chat(ctx, messages, toolSchemas)
 			if err != nil {
@@ -117,6 +122,7 @@ func (a *ReActAgent) Run(ctx context.Context, input string) <-chan Event {
 					toolName := tc.Function.Name
 					args := parseToolArguments(tc.Function.Arguments)
 
+					// 工具调用和工具结果都会作为事件暴露给 CLI 或后续 Web 层。
 					if !send(NewToolCallEvent(a.id, toolName, args)) {
 						return
 					}
@@ -139,6 +145,7 @@ func (a *ReActAgent) Run(ctx context.Context, input string) <-chan Event {
 				continue
 			}
 
+			// 没有工具调用时，说明模型已经准备好直接回答用户。
 			if resp.Content != "" {
 				for _, chunk := range responseChunks(resp.Content) {
 					if !send(NewChunkEvent(a.id, chunk)) {
@@ -164,6 +171,7 @@ func (a *ReActAgent) Run(ctx context.Context, input string) <-chan Event {
 	return events
 }
 
+// prepareMessages 复制历史消息，并追加本轮用户输入。
 func (a *ReActAgent) prepareMessages(input string) []llm.Message {
 	a.muMessages.RLock()
 	messages := make([]llm.Message, 0, len(a.messages)+2)
@@ -178,6 +186,7 @@ func (a *ReActAgent) prepareMessages(input string) []llm.Message {
 	return messages
 }
 
+// saveMessages 保存本轮完成后的对话历史。
 func (a *ReActAgent) saveMessages(messages []llm.Message) {
 	a.muMessages.Lock()
 	defer a.muMessages.Unlock()
@@ -185,6 +194,7 @@ func (a *ReActAgent) saveMessages(messages []llm.Message) {
 	a.messages = append(a.messages[:0], messages...)
 }
 
+// executeTool 根据工具名从注册表中查找并执行工具。
 func (a *ReActAgent) executeTool(ctx context.Context, toolName string, args map[string]any) string {
 	t, ok := a.config.Tools.Get(toolName)
 	if !ok {
@@ -199,6 +209,7 @@ func (a *ReActAgent) executeTool(ctx context.Context, toolName string, args map[
 	return result
 }
 
+// parseToolArguments 把模型返回的 JSON 字符串参数转换为 map。
 func parseToolArguments(raw string) map[string]any {
 	args := make(map[string]any)
 	if strings.TrimSpace(raw) == "" {
@@ -212,6 +223,7 @@ func parseToolArguments(raw string) map[string]any {
 	return args
 }
 
+// responseChunks 把完整回答切成较小片段，用于模拟流式输出。
 func responseChunks(content string) []string {
 	if content == "" {
 		return nil

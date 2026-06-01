@@ -25,6 +25,7 @@ func main() {
 
 	scanner := bufio.NewScanner(os.Stdin)
 
+	// 优先使用环境变量，便于本地开发和自动化运行。
 	apiKey := os.Getenv("DEEPSEEK_API_KEY")
 	if apiKey == "" {
 		fmt.Print("请输入 DeepSeek API Key: ")
@@ -40,6 +41,7 @@ func main() {
 	dsConfig := llm.DefaultDeepSeekConfig(apiKey)
 	dsLLM := llm.NewDeepSeekLLM(dsConfig)
 
+	// 注册 Agent 可调用的工具。
 	registry := tool.NewRegistry()
 	if err := registry.Register(builtin.NewHTTPTool()); err != nil {
 		fmt.Fprintf(os.Stderr, "注册工具失败: %v\n", err)
@@ -57,6 +59,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// 捕获退出信号，让正在运行的 Agent 有机会感知取消。
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
@@ -82,6 +85,7 @@ func main() {
 
 		fmt.Printf("\n🤖 %s:\n", myAgent.ID())
 
+		// 消费 Agent 事件流，并按事件类型渲染到命令行。
 		events := myAgent.Run(ctx, input)
 		for event := range events {
 			switch event.Type {
@@ -112,6 +116,7 @@ func main() {
 	}
 }
 
+// jsonMarshal 把调试信息格式化成 JSON 字符串，失败时退回到 fmt。
 func jsonMarshal(v any) string {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -120,6 +125,7 @@ func jsonMarshal(v any) string {
 	return string(b)
 }
 
+// truncateRunes 按字符数截断字符串，避免截断 UTF-8 字节。
 func truncateRunes(s string, max int) string {
 	runes := []rune(s)
 	if len(runes) <= max {

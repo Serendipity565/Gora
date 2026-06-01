@@ -2,7 +2,7 @@ package tool
 
 import "context"
 
-// Tool is an executable capability that an Agent can call.
+// Tool 表示 Agent 可以调用的一项外部能力。
 type Tool interface {
 	Name() string
 	Description() string

@@ -2,6 +2,7 @@ package agent
 
 import "time"
 
+// NewEvent 创建一个基础运行时事件。
 func NewEvent(eventType EventType, agentID, content string) Event {
 	return Event{
 		Type:      eventType,
@@ -11,10 +12,12 @@ func NewEvent(eventType EventType, agentID, content string) Event {
 	}
 }
 
+// NewThinkingEvent 创建思考事件。
 func NewThinkingEvent(agentID, content string) Event {
 	return NewEvent(EventThinking, agentID, content)
 }
 
+// NewToolCallEvent 创建工具调用事件，并把调用参数写入元数据。
 func NewToolCallEvent(agentID, toolName string, args map[string]any) Event {
 	return Event{
 		Type:      EventToolCall,
@@ -25,6 +28,7 @@ func NewToolCallEvent(agentID, toolName string, args map[string]any) Event {
 	}
 }
 
+// NewToolResultEvent 创建工具返回事件，并记录对应工具名。
 func NewToolResultEvent(agentID, toolName, result string) Event {
 	return Event{
 		Type:      EventToolResult,
@@ -35,14 +39,17 @@ func NewToolResultEvent(agentID, toolName, result string) Event {
 	}
 }
 
+// NewChunkEvent 创建流式输出片段事件。
 func NewChunkEvent(agentID, content string) Event {
 	return NewEvent(EventChunk, agentID, content)
 }
 
+// NewDoneEvent 创建本轮完成事件。
 func NewDoneEvent(agentID string) Event {
 	return NewEvent(EventDone, agentID, "")
 }
 
+// NewErrorEvent 创建错误事件。
 func NewErrorEvent(agentID string, err error) Event {
 	return NewEvent(EventError, agentID, err.Error())
 }
