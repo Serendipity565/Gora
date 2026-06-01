@@ -82,3 +82,31 @@ func TestBaseAgent_StopBeforeRun(t *testing.T) {
 		t.Fatal("Stop blocked before Run")
 	}
 }
+
+func TestBaseAgent_RejectsConcurrentRun(t *testing.T) {
+	registry := tool.NewRegistry()
+	a := NewBaseAgent("test-agent", registry)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	first := a.Run(ctx, "first")
+	if event := <-first; event.Type != EventThinking {
+		t.Fatalf("expected first run to start, got %s", event.Type)
+	}
+
+	second := a.Run(ctx, "second")
+	event, ok := <-second
+	if !ok {
+		t.Fatal("second run closed without an error event")
+	}
+	if event.Type != EventError {
+		t.Fatalf("expected concurrent run to be rejected, got %s", event.Type)
+	}
+
+	if err := a.Stop(); err != nil {
+		t.Fatalf("Stop returned error: %v", err)
+	}
+	for range first {
+	}
+}
