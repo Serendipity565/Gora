@@ -25,21 +25,6 @@ type ReActConfig struct {
 	MaxStreamChunkRunes int            // 单个输出事件的最大字符数
 }
 
-// DefaultReActConfig 返回一份适合普通助手场景的默认 ReAct 配置。
-func DefaultReActConfig(llmClient llm.LLM, tools *tool.Registry) ReActConfig {
-	return ReActConfig{
-		LLM:   llmClient,
-		Tools: tools,
-		SystemPrompt: `你是一个智能助手，可以使用工具来完成任务。
-当需要获取外部信息时，请调用合适的工具。
-当你已经获得足够信息可以回答用户时，请直接给出回答，不要再调用工具。`,
-		MaxSteps:            5,
-		MaxHistoryMessages:  30,
-		MaxToolResultRunes:  4000,
-		MaxStreamChunkRunes: 64,
-	}
-}
-
 // ReActAgent 实现“思考-行动-观察”的 ReAct 循环。
 type ReActAgent struct {
 	*BaseAgent

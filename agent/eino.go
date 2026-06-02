@@ -1,0 +1,404 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"strings"
+	"sync"
+
+	einoadk "github.com/cloudwego/eino/adk"
+	einomodel "github.com/cloudwego/eino/components/model"
+	einotool "github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/compose"
+	"github.com/cloudwego/eino/schema"
+
+	gotool "github.com/Serendipity565/gora/tool"
+)
+
+// EinoConfig 是基于 Eino 的 Agent 配置。
+type EinoConfig struct {
+	Model               einomodel.ToolCallingChatModel // Eino ToolCallingChatModel
+	Tools               *gotool.Registry               // Gora 工具注册表
+	Instruction         string                         // 系统提示词
+	Name                string                         // Eino Agent 名称
+	Description         string                         // Eino Agent 描述
+	MaxHistoryMessages  int                            // 每个会话最多保留的历史消息数
+	MaxStreamChunkRunes int                            // 单个输出事件的最大字符数
+}
+
+// DefaultEinoConfig 返回默认的 Eino Agent 配置。
+func DefaultEinoConfig(model einomodel.ToolCallingChatModel, tools *gotool.Registry) EinoConfig {
+	return EinoConfig{
+		Model:               model,
+		Tools:               tools,
+		Instruction:         "你是一个智能助手，可以使用工具来完成任务。当需要获取外部信息时，请调用合适的工具。当你已经获得足够信息可以回答用户时，请直接给出回答。",
+		Name:                "gora-eino-agent",
+		Description:         "基于 Eino 的 Gora Agent",
+		MaxHistoryMessages:  30,
+		MaxStreamChunkRunes: 64,
+	}
+}
+
+// EinoAgent 使用 Eino ChatModelAgent 作为推理内核，同时保留 Gora 的 goroutine 生命周期和事件流模型。
+type EinoAgent struct {
+	*BaseAgent
+	config EinoConfig
+	runner *einoadk.Runner
+
+	muHistories sync.RWMutex
+	histories   map[string][]*schema.Message
+}
+
+// NewEinoAgent 创建一个基于 Eino 的 Agent。
+func NewEinoAgent(id string, config EinoConfig) (*EinoAgent, error) {
+	if config.Model == nil {
+		return nil, fmt.Errorf("Eino Model 未配置")
+	}
+	if config.Tools == nil {
+		config.Tools = gotool.NewRegistry()
+	}
+	if strings.TrimSpace(config.Name) == "" {
+		config.Name = id
+	}
+	if strings.TrimSpace(config.Description) == "" {
+		config.Description = "Gora Eino Agent"
+	}
+	if config.MaxHistoryMessages <= 0 {
+		config.MaxHistoryMessages = 30
+	}
+	if config.MaxStreamChunkRunes <= 0 {
+		config.MaxStreamChunkRunes = 64
+	}
+
+	tools, err := buildEinoTools(config.Tools)
+	if err != nil {
+		return nil, err
+	}
+
+	einoAgent, err := einoadk.NewChatModelAgent(context.Background(), &einoadk.ChatModelAgentConfig{
+		Name:        config.Name,
+		Description: config.Description,
+		Instruction: config.Instruction,
+		Model:       config.Model,
+		ToolsConfig: einoadk.ToolsConfig{
+			ToolsNodeConfig: compose.ToolsNodeConfig{
+				Tools: tools,
+			},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("创建 Eino Agent 失败: %w", err)
+	}
+
+	return &EinoAgent{
+		BaseAgent: NewBaseAgent(id, config.Tools),
+		config:    config,
+		runner: einoadk.NewRunner(context.Background(), einoadk.RunnerConfig{
+			Agent:           einoAgent,
+			EnableStreaming: true,
+		}),
+		histories: make(map[string][]*schema.Message),
+	}, nil
+}
+
+// Run 使用默认会话执行一轮对话。
+func (a *EinoAgent) Run(ctx context.Context, input string) <-chan Event {
+	return a.RunSession(ctx, DefaultSessionID, input)
+}
+
+// RunSession 在指定会话中执行一轮对话。
+func (a *EinoAgent) RunSession(ctx context.Context, sessionID, input string) <-chan Event {
+	events := make(chan Event, 32)
+	runCtx, stopCh, doneCh, ok := a.beginRun(ctx)
+	if !ok {
+		go func() {
+			defer close(events)
+			events <- NewErrorEvent(a.id, fmt.Errorf("agent %s is already running", a.id))
+		}()
+		return events
+	}
+
+	go func() {
+		defer close(events)
+		defer a.finishRun(doneCh)
+
+		send := func(event Event) bool {
+			select {
+			case events <- event:
+				return true
+			case <-runCtx.Done():
+				select {
+				case <-stopCh:
+					return false
+				default:
+				}
+				a.setState(StateError)
+				return false
+			case <-stopCh:
+				return false
+			}
+		}
+
+		if strings.TrimSpace(sessionID) == "" {
+			sessionID = DefaultSessionID
+		}
+
+		messages := a.prepareMessages(sessionID, input)
+		runCtx = withToolEventEmitter(runCtx, send, a.id)
+
+		if !send(NewThinkingEvent(a.id, "正在使用 Eino Agent 思考...")) {
+			return
+		}
+
+		iter := a.runner.Run(runCtx, messages)
+		var assistantContents []string
+
+		for {
+			event, ok := iter.Next()
+			if !ok {
+				break
+			}
+			if event == nil {
+				continue
+			}
+			if event.Err != nil {
+				if !send(NewErrorEvent(a.id, fmt.Errorf("Eino 执行失败: %w", event.Err))) {
+					return
+				}
+				a.setState(StateError)
+				return
+			}
+			if event.Output == nil || event.Output.MessageOutput == nil {
+				continue
+			}
+
+			content, role, ok := a.forwardMessageOutput(event.Output.MessageOutput, send)
+			if !ok {
+				return
+			}
+			if role == schema.Assistant && strings.TrimSpace(content) != "" {
+				assistantContents = append(assistantContents, content)
+			}
+		}
+
+		finalReply := strings.TrimSpace(strings.Join(assistantContents, "\n"))
+		a.saveMessages(sessionID, input, finalReply)
+
+		if !send(NewDoneEvent(a.id)) {
+			return
+		}
+		a.setState(StateDone)
+	}()
+
+	return events
+}
+
+func (a *EinoAgent) forwardMessageOutput(
+	output *einoadk.MessageVariant,
+	send func(Event) bool,
+) (string, schema.RoleType, bool) {
+	if output == nil {
+		return "", "", true
+	}
+
+	// 工具事件已经由工具适配器主动发出，这里只转发 assistant 输出，避免重复。
+	if output.Role == schema.Tool {
+		return messageContent(output), output.Role, true
+	}
+
+	content, err := readMessageVariant(output, a.config.MaxStreamChunkRunes, func(part string) bool {
+		return send(NewChunkEvent(a.id, part))
+	})
+	if err != nil {
+		_ = send(NewErrorEvent(a.id, fmt.Errorf("读取 Eino 输出失败: %w", err)))
+		a.setState(StateError)
+		return "", output.Role, false
+	}
+
+	return content, output.Role, true
+}
+
+func (a *EinoAgent) prepareMessages(sessionID, input string) []*schema.Message {
+	a.muHistories.RLock()
+	history := append([]*schema.Message(nil), a.histories[sessionID]...)
+	a.muHistories.RUnlock()
+
+	history = append(history, schema.UserMessage(input))
+	return history
+}
+
+func (a *EinoAgent) saveMessages(sessionID, input, reply string) {
+	a.muHistories.Lock()
+	defer a.muHistories.Unlock()
+
+	history := append([]*schema.Message(nil), a.histories[sessionID]...)
+	history = append(history, schema.UserMessage(input))
+	if strings.TrimSpace(reply) != "" {
+		history = append(history, schema.AssistantMessage(reply, nil))
+	}
+	a.histories[sessionID] = trimSchemaHistory(history, a.config.MaxHistoryMessages)
+}
+
+func buildEinoTools(registry *gotool.Registry) ([]einotool.BaseTool, error) {
+	tools := registry.List()
+	out := make([]einotool.BaseTool, 0, len(tools))
+	for _, t := range tools {
+		info, err := buildToolInfo(t)
+		if err != nil {
+			return nil, fmt.Errorf("构建工具 %s 的 Eino 描述失败: %w", t.Name(), err)
+		}
+		out = append(out, &goraInvokableTool{
+			tool: t,
+			info: info,
+		})
+	}
+	return out, nil
+}
+
+func buildToolInfo(t gotool.Tool) (*schema.ToolInfo, error) {
+	payload := map[string]any{
+		"name": t.Name(),
+		"desc": t.Description(),
+	}
+	if params := t.Parameters(); params != nil {
+		payload["has_params_one_of"] = true
+		payload["json_schema"] = params
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+
+	var info schema.ToolInfo
+	if err := json.Unmarshal(data, &info); err != nil {
+		return nil, err
+	}
+
+	return &info, nil
+}
+
+func trimSchemaHistory(history []*schema.Message, max int) []*schema.Message {
+	if max <= 0 || len(history) <= max {
+		return history
+	}
+	return append([]*schema.Message(nil), history[len(history)-max:]...)
+}
+
+func readMessageVariant(
+	output *einoadk.MessageVariant,
+	maxChunkRunes int,
+	onChunk func(string) bool,
+) (string, error) {
+	if output == nil {
+		return "", nil
+	}
+
+	if !output.IsStreaming {
+		content := messageContent(output)
+		for _, part := range splitRunes(content, maxChunkRunes) {
+			if part == "" {
+				continue
+			}
+			if !onChunk(part) {
+				return "", context.Canceled
+			}
+		}
+		return content, nil
+	}
+
+	defer output.MessageStream.Close()
+
+	var content strings.Builder
+	for {
+		frame, err := output.MessageStream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", err
+		}
+		if frame == nil || frame.Content == "" {
+			continue
+		}
+		content.WriteString(frame.Content)
+		for _, part := range splitRunes(frame.Content, maxChunkRunes) {
+			if part == "" {
+				continue
+			}
+			if !onChunk(part) {
+				return "", context.Canceled
+			}
+		}
+	}
+
+	return content.String(), nil
+}
+
+func messageContent(output *einoadk.MessageVariant) string {
+	if output == nil || output.Message == nil {
+		return ""
+	}
+	return output.Message.Content
+}
+
+type toolEventEmitter func(Event) bool
+
+type toolEventContextKey struct{}
+
+type toolEventPayload struct {
+	emit    toolEventEmitter
+	agentID string
+}
+
+func withToolEventEmitter(ctx context.Context, emit toolEventEmitter, agentID string) context.Context {
+	return context.WithValue(ctx, toolEventContextKey{}, toolEventPayload{
+		emit:    emit,
+		agentID: agentID,
+	})
+}
+
+func getToolEventEmitter(ctx context.Context) (toolEventPayload, bool) {
+	payload, ok := ctx.Value(toolEventContextKey{}).(toolEventPayload)
+	return payload, ok
+}
+
+type goraInvokableTool struct {
+	tool gotool.Tool
+	info *schema.ToolInfo
+}
+
+func (g *goraInvokableTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
+	return g.info, nil
+}
+
+func (g *goraInvokableTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...einotool.Option) (string, error) {
+	args := make(map[string]any)
+	if strings.TrimSpace(argumentsInJSON) != "" {
+		if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
+			args = map[string]any{"raw": argumentsInJSON}
+		}
+	}
+
+	if payload, ok := getToolEventEmitter(ctx); ok {
+		if !payload.emit(NewToolCallEvent(payload.agentID, g.tool.Name(), args)) {
+			return "", context.Canceled
+		}
+	}
+
+	result, err := g.tool.Execute(ctx, args)
+	if err != nil {
+		result = fmt.Sprintf("错误: %s", err.Error())
+		err = nil
+	}
+
+	if payload, ok := getToolEventEmitter(ctx); ok {
+		if !payload.emit(NewToolResultEvent(payload.agentID, g.tool.Name(), result)) {
+			return "", context.Canceled
+		}
+	}
+
+	return result, err
+}

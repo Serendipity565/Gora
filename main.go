@@ -39,7 +39,11 @@ func main() {
 	}
 
 	dsConfig := llm.DefaultDeepSeekConfig(apiKey)
-	dsLLM := llm.NewDeepSeekLLM(dsConfig)
+	dsModel, err := llm.NewDeepSeekEinoModel(context.Background(), dsConfig)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "初始化 DeepSeek Eino 模型失败: %v\n", err)
+		os.Exit(1)
+	}
 
 	// 注册 Agent 可调用的工具。
 	registry := tool.NewRegistry()
@@ -49,8 +53,12 @@ func main() {
 	}
 	fmt.Printf("✅ 已加载 %d 个工具\n", len(registry.List()))
 
-	agentConfig := agent.DefaultReActConfig(dsLLM, registry)
-	myAgent := agent.NewReActAgent("agent-1", agentConfig)
+	agentConfig := agent.DefaultEinoConfig(dsModel, registry)
+	myAgent, err := agent.NewEinoAgent("agent-1", agentConfig)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "创建 Eino Agent 失败: %v\n", err)
+		os.Exit(1)
+	}
 
 	fmt.Printf("🤖 %s 已就绪 (模型: %s)\n", myAgent.ID(), dsConfig.Model)
 	fmt.Println("输入消息与 Agent 对话，输入 /quit 退出")
