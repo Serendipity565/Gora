@@ -1,0 +1,35 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: gora-mysql
+    environment:
+      MYSQL_DATABASE: gora
+      MYSQL_USER: gora
+      MYSQL_PASSWORD: gora_dev_password
+      MYSQL_ROOT_PASSWORD: gora_root_password
+    ports:
+      - "3306:3306"
+    volumes:
+      - gora-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u gora -pgora_dev_password"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: gora-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - gora-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  gora-mysql-data:
+  gora-redis-data:

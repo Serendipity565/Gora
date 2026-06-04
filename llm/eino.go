@@ -9,19 +9,42 @@ import (
 	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
 )
 
-// NewDeepSeekEinoModel 创建一个基于 Eino OpenAI 兼容适配器的 DeepSeek 模型。
-func NewDeepSeekEinoModel(ctx context.Context, config DeepSeekConfig) (*einoopenai.ChatModel, error) {
-	if config.BaseURL == "" {
-		config.BaseURL = "https://api.deepseek.com"
-	}
-	if config.Model == "" {
-		config.Model = "deepseek-chat"
-	}
+// OpenAICompatibleConfig 是 OpenAI 兼容接口的客户端配置。
+type OpenAICompatibleConfig struct {
+	APIKey  string // 接口密钥
+	BaseURL string // 接口基础地址，例如 https://api.deepseek.com 或 https://api.openai.com/v1
+	Model   string // 模型名称，例如 deepseek-chat 或 gpt-4o-mini
+}
 
+// DeepSeekConfig 保留给旧调用方，底层仍然使用 OpenAI 兼容配置。
+type DeepSeekConfig = OpenAICompatibleConfig
+
+// DefaultDeepSeekConfig 返回 DeepSeek 默认配置。
+func DefaultDeepSeekConfig(apiKey string) OpenAICompatibleConfig {
+	return OpenAICompatibleConfig{
+		APIKey:  apiKey,
+		BaseURL: "https://api.deepseek.com",
+		Model:   "deepseek-chat",
+	}
+}
+
+// NewOpenAICompatibleEinoModel 创建一个基于 Eino OpenAI 兼容适配器的模型。
+func NewOpenAICompatibleEinoModel(ctx context.Context, config OpenAICompatibleConfig) (*einoopenai.ChatModel, error) {
 	return einoopenai.NewChatModel(ctx, &einoopenai.ChatModelConfig{
-		APIKey:     config.APIKey,
-		BaseURL:    strings.TrimRight(config.BaseURL, "/"),
-		Model:      config.Model,
+		APIKey:     strings.TrimSpace(config.APIKey),
+		BaseURL:    strings.TrimRight(strings.TrimSpace(config.BaseURL), "/"),
+		Model:      strings.TrimSpace(config.Model),
 		HTTPClient: &http.Client{Timeout: 120 * time.Second},
 	})
+}
+
+// NewDeepSeekEinoModel 创建一个基于 Eino OpenAI 兼容适配器的 DeepSeek 模型。
+func NewDeepSeekEinoModel(ctx context.Context, config DeepSeekConfig) (*einoopenai.ChatModel, error) {
+	if strings.TrimSpace(config.BaseURL) == "" {
+		config.BaseURL = "https://api.deepseek.com"
+	}
+	if strings.TrimSpace(config.Model) == "" {
+		config.Model = "deepseek-chat"
+	}
+	return NewOpenAICompatibleEinoModel(ctx, OpenAICompatibleConfig(config))
 }

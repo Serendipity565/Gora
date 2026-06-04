@@ -17,6 +17,9 @@ import (
 	gotool "github.com/Serendipity565/gora/tool"
 )
 
+// DefaultSessionID 是默认会话标识。
+const DefaultSessionID = "default"
+
 // EinoConfig 是基于 Eino 的 Agent 配置。
 type EinoConfig struct {
 	Model               einomodel.ToolCallingChatModel // Eino ToolCallingChatModel
@@ -49,6 +52,29 @@ type EinoAgent struct {
 
 	muHistories sync.RWMutex
 	histories   map[string][]*schema.Message
+}
+
+// SnapshotHistories 返回当前会话历史的深拷贝，供运行时重建 Agent 时复用上下文。
+func (a *EinoAgent) SnapshotHistories() map[string][]*schema.Message {
+	a.muHistories.RLock()
+	defer a.muHistories.RUnlock()
+
+	snapshot := make(map[string][]*schema.Message, len(a.histories))
+	for sessionID, history := range a.histories {
+		snapshot[sessionID] = append([]*schema.Message(nil), history...)
+	}
+	return snapshot
+}
+
+// RestoreHistories 用外部提供的会话历史替换当前 Agent 上下文。
+func (a *EinoAgent) RestoreHistories(histories map[string][]*schema.Message) {
+	a.muHistories.Lock()
+	defer a.muHistories.Unlock()
+
+	a.histories = make(map[string][]*schema.Message, len(histories))
+	for sessionID, history := range histories {
+		a.histories[sessionID] = append([]*schema.Message(nil), history...)
+	}
 }
 
 // NewEinoAgent 创建一个基于 Eino 的 Agent。
@@ -342,6 +368,24 @@ func messageContent(output *einoadk.MessageVariant) string {
 		return ""
 	}
 	return output.Message.Content
+}
+
+func splitRunes(content string, maxRunes int) []string {
+	if maxRunes <= 0 || len([]rune(content)) <= maxRunes {
+		return []string{content}
+	}
+
+	runes := []rune(content)
+	parts := make([]string, 0, len(runes)/maxRunes+1)
+	for start := 0; start < len(runes); start += maxRunes {
+		end := start + maxRunes
+		if end > len(runes) {
+			end = len(runes)
+		}
+		parts = append(parts, string(runes[start:end]))
+	}
+
+	return parts
 }
 
 type toolEventEmitter func(Event) bool

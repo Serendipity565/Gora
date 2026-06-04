@@ -1,0 +1,32 @@
+llm:
+  - name: "chat"
+    provider: deepseek
+    api_key: "sk-your-api-key"
+    base_url: "https://api.deepseek.com"
+    model: "deepseek-chat"
+  - name: "gpt-4o-mini"
+    provider: openai
+    api_key: "your-api-key"
+    base_url: "https://api.openai.com/v1"
+    model: "gpt-4o-mini"
+
+agent:
+  id: "agent-1"
+  name: "gora-eino-agent"
+  description: "基于 Eino 的 Gora Agent"
+  instruction: "你是一个智能助手，可以使用工具来完成任务。当需要获取外部信息时，请调用合适的工具。当你已经获得足够信息可以回答用户时，请直接给出回答。"
+  max_history_messages: 30
+  max_stream_chunk_runes: 64
+
+database:
+  mysql:
+    addr: "localhost:3306"
+    dbname: "gora"
+    username: "gora"
+    password: "gora_dev_password"
+
+  redis:
+    addr: "localhost:6379"
+    password: ""
+    db: 0
+    short_term_ttl: "24h"
