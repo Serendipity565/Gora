@@ -1,0 +1,24 @@
+# Repository Guidelines
+
+## Project Structure & Module Organization
+`main.go` boots the Cobra CLI. `cmd/` contains command wiring and the interactive chat flow. `agent/` holds agent implementations and event handling. `llm/` wraps OpenAI-compatible model clients. `tool/` and `tool/builtin/` define tool interfaces and built-in tools. `storage/` contains MySQL-backed history/model selection and Redis-backed short-term memory. `config/` loads YAML settings; start from `config/config.example.yaml` and keep local overrides in `config/config.yaml`. Tests live beside the code as `*_test.go` files.
+
+## Build, Test, and Development Commands
+- `go run . --config config/config.yaml` runs the CLI with a local config.
+- `go run . chat --config config/config.yaml` starts the chat command explicitly.
+- `go test ./...` runs the full unit test suite.
+- `go test ./... -cover` checks package coverage when changing behavior-critical code.
+- `docker compose up -d mysql redis` starts local MySQL and Redis for storage-related work.
+- `gofmt -w $(rg --files -g '*.go')` formats all Go sources.
+
+## Coding Style & Naming Conventions
+Follow standard Go formatting and let `gofmt` decide indentation and spacing. Keep package names short and lowercase, exported identifiers in `CamelCase`, and error strings lowercase. Match existing config key patterns such as `max_history_messages` and `short_term_ttl`. User-facing CLI text is currently Chinese, so keep new prompts and messages consistent unless you are intentionally changing localization.
+
+## Testing Guidelines
+Add tests next to the implementation you change, for example `cmd/chat_test.go` or `storage/model_selection_test.go`. Prefer table-driven tests for config parsing, selector logic, and storage edge cases. Name tests `TestXxx`. There is no enforced coverage gate, but touched packages should keep or improve coverage and should pass `go test ./...` before review.
+
+## Commit & Pull Request Guidelines
+Recent history uses short, imperative, lowercase commit subjects such as `add configuration files and Redis active memory store implementation`. Follow that style, keep each commit focused, and mention the subsystem when useful. PRs should describe behavior changes, config or schema impact, linked tasks, and the verification performed. Include terminal output or screenshots only when CLI behavior materially changes.
+
+## Configuration & Security Tips
+Do not commit real API keys, database credentials, or local DSNs. Prefer environment variables such as `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `GORA_DATABASE_URL`, and `GORA_REDIS_ADDR`, or keep secrets in an untracked `config/config.yaml`.

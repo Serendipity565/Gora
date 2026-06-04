@@ -3,113 +3,127 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 func TestLoad(t *testing.T) {
 	t.Parallel()
 
-	path := writeConfig(t, `
+	path := writeConfig(t, withAgentConfig(`
 llm:
-  - api_key: sk-test
-    model: deepseek-reasoner
-agent:
-  id: custom-agent
-  max_history_messages: 12
-`)
+  - name: reasoner
+    provider: deepseek
+    api_key: "  sk-test  "
+    base_url: "  https://api.deepseek.com  "
+    model: "  deepseek-reasoner  "
+database:
+  url: "  gora:gora_dev_password@tcp(localhost:3306)/gora?charset=utf8mb4&parseTime=True&loc=Local  "
+`))
 
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load failed: %v", err)
-	}
+	cfg := Load(path)
 
 	if len(cfg.LLM) != 1 {
 		t.Fatalf("expected 1 llm config, got %d", len(cfg.LLM))
 	}
+	if cfg.LLM[0].Name != "reasoner" {
+		t.Fatalf("unexpected name: %q", cfg.LLM[0].Name)
+	}
 	if cfg.LLM[0].Provider != "deepseek" {
-		t.Fatalf("expected default provider, got %s", cfg.LLM[0].Provider)
+		t.Fatalf("unexpected provider: %q", cfg.LLM[0].Provider)
+	}
+	if cfg.LLM[0].APIKey != "sk-test" {
+		t.Fatalf("unexpected api key: %q", cfg.LLM[0].APIKey)
 	}
 	if cfg.LLM[0].BaseURL != "https://api.deepseek.com" {
-		t.Fatalf("expected default base url, got %s", cfg.LLM[0].BaseURL)
+		t.Fatalf("unexpected base url: %q", cfg.LLM[0].BaseURL)
 	}
 	if cfg.LLM[0].Model != "deepseek-reasoner" {
-		t.Fatalf("unexpected model: %s", cfg.LLM[0].Model)
+		t.Fatalf("unexpected model: %q", cfg.LLM[0].Model)
 	}
-	if cfg.Agent.ID != "custom-agent" {
-		t.Fatalf("unexpected agent id: %s", cfg.Agent.ID)
+	if cfg.Agent.ID != "agent-1" {
+		t.Fatalf("unexpected agent id: %q", cfg.Agent.ID)
 	}
-	if cfg.Agent.MaxHistoryMessages != 12 {
-		t.Fatalf("unexpected max history messages: %d", cfg.Agent.MaxHistoryMessages)
-	}
-	if cfg.Agent.MaxStreamChunkRunes != 64 {
-		t.Fatalf("expected default stream chunk size, got %d", cfg.Agent.MaxStreamChunkRunes)
+	if cfg.Database.DSN() != "gora:gora_dev_password@tcp(localhost:3306)/gora?charset=utf8mb4&parseTime=True&loc=Local" {
+		t.Fatalf("unexpected database dsn: %q", cfg.Database.DSN())
 	}
 }
 
-func TestLoadSupportsOpenAIProviderDefaults(t *testing.T) {
+func TestLoadSupportsOpenAIProvider(t *testing.T) {
 	t.Parallel()
 
-	path := writeConfig(t, `
+	path := writeConfig(t, withAgentConfig(`
 llm:
   - provider: openai
     api_key: sk-openai
-`)
+    base_url: https://api.openai.com/v1
+    model: gpt-4o-mini
+`))
 
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load failed: %v", err)
-	}
+	cfg := Load(path)
 
 	if cfg.LLM[0].Provider != "openai" {
-		t.Fatalf("unexpected provider: %s", cfg.LLM[0].Provider)
+		t.Fatalf("unexpected provider: %q", cfg.LLM[0].Provider)
 	}
 	if cfg.LLM[0].BaseURL != "https://api.openai.com/v1" {
-		t.Fatalf("unexpected base url: %s", cfg.LLM[0].BaseURL)
+		t.Fatalf("unexpected base url: %q", cfg.LLM[0].BaseURL)
 	}
 	if cfg.LLM[0].Model != "gpt-4o-mini" {
-		t.Fatalf("unexpected model: %s", cfg.LLM[0].Model)
+		t.Fatalf("unexpected model: %q", cfg.LLM[0].Model)
 	}
+}
+
+func TestLoadSupportsMockProviderWithoutCredentials(t *testing.T) {
+	t.Parallel()
+
+	path := writeConfig(t, withAgentConfig(`
+llm:
+  - name: echo
+    provider: mock
+    model: echo
+`))
+
+	_ = Load(path)
 }
 
 func TestLoadRequiresAPIKey(t *testing.T) {
 	t.Parallel()
 
-	path := writeConfig(t, `
+	path := writeConfig(t, withAgentConfig(`
 llm:
-  - model: deepseek-chat
-`)
+  - provider: deepseek
+    base_url: https://api.deepseek.com
+    model: deepseek-chat
+`))
 
-	if _, err := Load(path); err == nil {
-		t.Fatal("expected empty api key to fail")
-	}
+	defer expectPanic(t)
+	_ = Load(path)
 }
 
-func TestReadAllowsMissingAPIKey(t *testing.T) {
+func TestLoadRequiresBaseURLForNonMock(t *testing.T) {
 	t.Parallel()
 
-	path := writeConfig(t, `
+	path := writeConfig(t, withAgentConfig(`
 llm:
-  - model: deepseek-chat
-`)
+  - provider: deepseek
+    api_key: sk-test
+    model: deepseek-chat
+`))
 
-	cfg, err := Read(path)
-	if err != nil {
-		t.Fatalf("Read failed: %v", err)
-	}
-	if cfg.LLM[0].APIKey != "" {
-		t.Fatalf("expected empty api key, got %q", cfg.LLM[0].APIKey)
-	}
+	defer expectPanic(t)
+	_ = Load(path)
 }
 
 func TestReadTrimsDatabaseURL(t *testing.T) {
 	t.Parallel()
 
-	path := writeConfig(t, `
+	path := writeConfig(t, withAgentConfig(`
 llm:
-  - model: deepseek-chat
+  - provider: mock
+    model: echo
 database:
   url: "  gora:gora_dev_password@tcp(localhost:3306)/gora?charset=utf8mb4&parseTime=True&loc=Local  "
-`)
+`))
 
 	cfg, err := Read(path)
 	if err != nil {
@@ -121,43 +135,45 @@ database:
 	}
 }
 
-func TestReadBuildsDatabaseURLFromMySQLConfig(t *testing.T) {
+func TestReadBuildsDatabaseDSNFromMySQLConfig(t *testing.T) {
 	t.Parallel()
 
-	path := writeConfig(t, `
+	path := writeConfig(t, withAgentConfig(`
 llm:
-  - model: deepseek-chat
+  - provider: mock
+    model: echo
 database:
   mysql:
     addr: "  localhost:3306  "
     dbname: "  gora  "
     username: "  gora  "
     password: "  gora_dev_password  "
-`)
+`))
 
 	cfg, err := Read(path)
 	if err != nil {
 		t.Fatalf("Read failed: %v", err)
 	}
 	want := "gora:gora_dev_password@tcp(localhost:3306)/gora?charset=utf8mb4&parseTime=True&loc=Local"
-	if cfg.DatabaseURL() != want {
-		t.Fatalf("unexpected database url: %q", cfg.DatabaseURL())
+	if cfg.Database.DSN() != want {
+		t.Fatalf("unexpected database dsn: %q", cfg.Database.DSN())
 	}
 }
 
 func TestReadRedisConfig(t *testing.T) {
 	t.Parallel()
 
-	path := writeConfig(t, `
+	path := writeConfig(t, withAgentConfig(`
 llm:
-  - model: deepseek-chat
+  - provider: mock
+    model: echo
 database:
   redis:
     addr: "  localhost:6379  "
     password: "  secret  "
     db: 2
     short_term_ttl: "  12h  "
-`)
+`))
 
 	cfg, err := Read(path)
 	if err != nil {
@@ -181,15 +197,16 @@ database:
 func TestReadLegacyRedisConfig(t *testing.T) {
 	t.Parallel()
 
-	path := writeConfig(t, `
+	path := writeConfig(t, withAgentConfig(`
 llm:
-  - model: deepseek-chat
+  - provider: mock
+    model: echo
 redis:
-  addr: "localhost:6379"
-  password: "legacy"
+  addr: localhost:6379
+  password: legacy
   db: 1
-  short_term_ttl: "6h"
-`)
+  short_term_ttl: 6h
+`))
 
 	cfg, err := Read(path)
 	if err != nil {
@@ -207,36 +224,23 @@ redis:
 	}
 }
 
-func TestReadRedisDefaultTTL(t *testing.T) {
+func TestReadLeavesRedisTTLUnsetWhenOmitted(t *testing.T) {
 	t.Parallel()
 
-	path := writeConfig(t, `
+	path := writeConfig(t, withAgentConfig(`
 llm:
-  - model: deepseek-chat
+  - provider: mock
+    model: echo
 redis:
-  addr: "localhost:6379"
-`)
+  addr: localhost:6379
+`))
 
 	cfg, err := Read(path)
 	if err != nil {
 		t.Fatalf("Read failed: %v", err)
 	}
-	if cfg.RedisSettings().ShortTermTTL != "24h" {
-		t.Fatalf("unexpected redis default ttl: %q", cfg.RedisSettings().ShortTermTTL)
-	}
-}
-
-func TestLoadRejectsUnsupportedProvider(t *testing.T) {
-	t.Parallel()
-
-	path := writeConfig(t, `
-llm:
-  - provider: other
-    api_key: sk-test
-`)
-
-	if _, err := Load(path); err == nil {
-		t.Fatal("expected unsupported provider to fail")
+	if cfg.RedisSettings().ShortTermTTL != "" {
+		t.Fatalf("unexpected redis ttl: %q", cfg.RedisSettings().ShortTermTTL)
 	}
 }
 
@@ -245,8 +249,8 @@ func TestFindLLM(t *testing.T) {
 
 	cfg := Config{
 		LLM: []LLMConfig{
-			{Name: "chat", Provider: "deepseek", Model: "deepseek-chat", APIKey: "sk-1"},
-			{Name: "reasoner", Provider: "deepseek", Model: "deepseek-reasoner", APIKey: "sk-2"},
+			{Name: "chat", Provider: "deepseek", Model: "deepseek-chat", APIKey: "sk-1", BaseURL: "https://api.deepseek.com"},
+			{Name: "reasoner", Provider: "deepseek", Model: "deepseek-reasoner", APIKey: "sk-2", BaseURL: "https://api.deepseek.com"},
 		},
 	}
 
@@ -264,16 +268,63 @@ func TestFindLLM(t *testing.T) {
 func TestValidateRejectsDuplicateLLMNames(t *testing.T) {
 	t.Parallel()
 
-	cfg := Config{
-		LLM: []LLMConfig{
-			{Name: "chat", Provider: "deepseek", Model: "deepseek-chat", APIKey: "sk-1"},
-			{Name: "CHAT", Provider: "deepseek", Model: "deepseek-reasoner", APIKey: "sk-2"},
-		},
+	cfg := validConfig()
+	cfg.LLM = []LLMConfig{
+		{Name: "chat", Provider: "deepseek", Model: "deepseek-chat", APIKey: "sk-1", BaseURL: "https://api.deepseek.com"},
+		{Name: "CHAT", Provider: "deepseek", Model: "deepseek-reasoner", APIKey: "sk-2", BaseURL: "https://api.deepseek.com"},
 	}
 
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected duplicate llm names to fail")
 	}
+}
+
+func TestValidateRejectsInvalidRedisTTL(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Redis.ShortTermTTL = "soon"
+	cfg.Database.Redis = cfg.Redis
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected invalid redis ttl to fail")
+	}
+}
+
+func TestLoadPanicsOnInvalidConfig(t *testing.T) {
+	t.Parallel()
+
+	path := writeConfig(t, "llm: []\n")
+
+	defer expectPanic(t)
+	_ = Load(path)
+}
+
+func validConfig() Config {
+	return Config{
+		LLM: []LLMConfig{{Provider: "mock", Model: "echo"}},
+		Agent: AgentConfig{
+			ID:                  "agent-1",
+			Name:                "gora-eino-agent",
+			Description:         "基于 Eino 的 Gora Agent",
+			Instruction:         "你是一个智能助手，可以使用工具来完成任务。当需要获取外部信息时，请调用合适的工具。当你已经获得足够信息可以回答用户时，请直接给出回答。",
+			MaxHistoryMessages:  30,
+			MaxStreamChunkRunes: 64,
+		},
+	}
+}
+
+func withAgentConfig(content string) string {
+	return strings.TrimSpace(content) + `
+
+agent:
+  id: agent-1
+  name: gora-eino-agent
+  description: 基于 Eino 的 Gora Agent
+  instruction: 你是一个智能助手，可以使用工具来完成任务。当需要获取外部信息时，请调用合适的工具。当你已经获得足够信息可以回答用户时，请直接给出回答。
+  max_history_messages: 30
+  max_stream_chunk_runes: 64
+`
 }
 
 func writeConfig(t *testing.T, content string) string {
@@ -284,4 +335,11 @@ func writeConfig(t *testing.T, content string) string {
 		t.Fatalf("write config: %v", err)
 	}
 	return path
+}
+
+func expectPanic(t *testing.T) {
+	t.Helper()
+	if recover() == nil {
+		t.Fatal("expected panic")
+	}
 }

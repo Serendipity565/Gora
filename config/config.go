@@ -1,20 +1,54 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Serendipity565/gora/llm"
+	"github.com/go-playground/validator/v10"
 	"github.com/spf13/viper"
 )
 
 // DefaultPath 是 Gora CLI 默认读取的配置文件路径。
 const DefaultPath = "config/config.yaml"
 
+var validationNamespaceReplacer = strings.NewReplacer(
+	"Config.", "",
+	"DatabaseConfig.", "",
+	"AgentConfig.", "",
+	"RedisConfig.", "",
+	"MySQLConfig.", "",
+	"LLMConfig.", "",
+	"MaxHistoryMessages", "max_history_messages",
+	"MaxStreamChunkRunes", "max_stream_chunk_runes",
+	"ShortTermTTL", "short_term_ttl",
+	"BaseURL", "base_url",
+	"DBName", "dbname",
+	"APIKey", "api_key",
+	"Database", "database",
+	"Agent", "agent",
+	"MySQL", "mysql",
+	"Redis", "redis",
+	"LLM", "llm",
+	"Provider", "provider",
+	"Model", "model",
+	"Description", "description",
+	"Instruction", "instruction",
+	"Name", "name",
+	"URL", "url",
+	"Addr", "addr",
+	"Username", "username",
+	"Password", "password",
+	"ID", "id",
+	"DB", "db",
+)
+
 // Config 是应用启动配置。
 type Config struct {
-	LLM      []LLMConfig    `mapstructure:"llm" yaml:"llm"`
+	LLM      []LLMConfig    `mapstructure:"llm" yaml:"llm" validate:"required,min=1,dive"`
 	Agent    AgentConfig    `mapstructure:"agent" yaml:"agent"`
 	Database DatabaseConfig `mapstructure:"database" yaml:"database"`
 	Redis    RedisConfig    `mapstructure:"redis" yaml:"redis"`
@@ -23,14 +57,15 @@ type Config struct {
 // LLMConfig 是模型服务配置。
 type LLMConfig struct {
 	Name     string `mapstructure:"name" yaml:"name"`
-	Provider string `mapstructure:"provider" yaml:"provider"`
+	Provider string `mapstructure:"provider" yaml:"provider" validate:"required"`
 	APIKey   string `mapstructure:"api_key" yaml:"api_key"`
 	BaseURL  string `mapstructure:"base_url" yaml:"base_url"`
-	Model    string `mapstructure:"model" yaml:"model"`
+	Model    string `mapstructure:"model" yaml:"model" validate:"required"`
 }
 
 // DatabaseConfig 是持久化存储配置。
 type DatabaseConfig struct {
+	URL   string      `mapstructure:"url" yaml:"url"`
 	MySQL MySQLConfig `mapstructure:"mysql" yaml:"mysql"`
 	Redis RedisConfig `mapstructure:"redis" yaml:"redis"`
 }
@@ -47,48 +82,33 @@ type MySQLConfig struct {
 type RedisConfig struct {
 	Addr         string `mapstructure:"addr" yaml:"addr"`
 	Password     string `mapstructure:"password" yaml:"password"`
-	DB           int    `mapstructure:"db" yaml:"db"`
+	DB           int    `mapstructure:"db" yaml:"db" validate:"gte=0"`
 	ShortTermTTL string `mapstructure:"short_term_ttl" yaml:"short_term_ttl"`
 }
 
 // AgentConfig 是 Agent 运行配置。
 type AgentConfig struct {
-	ID                  string `mapstructure:"id" yaml:"id"`
-	Name                string `mapstructure:"name" yaml:"name"`
-	Description         string `mapstructure:"description" yaml:"description"`
-	Instruction         string `mapstructure:"instruction" yaml:"instruction"`
-	MaxHistoryMessages  int    `mapstructure:"max_history_messages" yaml:"max_history_messages"`
-	MaxStreamChunkRunes int    `mapstructure:"max_stream_chunk_runes" yaml:"max_stream_chunk_runes"`
+	ID                  string `mapstructure:"id" yaml:"id" validate:"required"`
+	Name                string `mapstructure:"name" yaml:"name" validate:"required"`
+	Description         string `mapstructure:"description" yaml:"description" validate:"required"`
+	Instruction         string `mapstructure:"instruction" yaml:"instruction" validate:"required"`
+	MaxHistoryMessages  int    `mapstructure:"max_history_messages" yaml:"max_history_messages" validate:"gte=1"`
+	MaxStreamChunkRunes int    `mapstructure:"max_stream_chunk_runes" yaml:"max_stream_chunk_runes" validate:"gte=1"`
 }
 
-// Default 返回应用默认配置。敏感配置仍需要在 config.yaml 中显式填写。
-func Default() Config {
-	return Config{
-		LLM: []LLMConfig{defaultLLMConfig()},
-		Agent: AgentConfig{
-			ID:                  "agent-1",
-			Name:                "gora-eino-agent",
-			Description:         "基于 Eino 的 Gora Agent",
-			Instruction:         "你是一个智能助手，可以使用工具来完成任务。当需要获取外部信息时，请调用合适的工具。当你已经获得足够信息可以回答用户时，请直接给出回答。",
-			MaxHistoryMessages:  30,
-			MaxStreamChunkRunes: 64,
-		},
-	}
-}
-
-// Load 从 YAML 文件加载并校验应用配置。
-func Load(path string) (Config, error) {
+// Load 从 YAML 文件加载并校验应用配置，失败直接 panic。
+func Load(path string) Config {
 	cfg, err := Read(path)
 	if err != nil {
-		return Config{}, err
+		panic(err)
 	}
 	if err := cfg.Validate(); err != nil {
-		return Config{}, err
+		panic(err)
 	}
-	return cfg, nil
+	return cfg
 }
 
-// Read 从 YAML 文件读取应用配置并补齐默认值，但不做 API Key 启动校验。
+// Read 从 YAML 文件读取应用配置并做基础归一化。
 func Read(path string) (Config, error) {
 	if strings.TrimSpace(path) == "" {
 		path = DefaultPath
@@ -106,56 +126,56 @@ func Read(path string) (Config, error) {
 		return Config{}, fmt.Errorf("解析配置文件 %s 失败: %w", path, err)
 	}
 
-	cfg.applyDefaults()
-	if err := cfg.ValidateRuntime(); err != nil {
-		return Config{}, err
-	}
+	cfg.normalize()
 	return cfg, nil
 }
 
 // Validate 校验当前配置是否足以启动应用。
 func (c Config) Validate() error {
-	return c.validate(true)
-}
-
-// ValidateRuntime 校验当前配置结构是否合法，但允许 API Key 在运行时补全。
-func (c Config) ValidateRuntime() error {
-	return c.validate(false)
-}
-
-func (c Config) validate(requireAPIKey bool) error {
-	if len(c.LLM) == 0 {
-		return fmt.Errorf("至少需要配置一个 llm")
-	}
-
-	seenNames := make(map[string]struct{}, len(c.LLM))
-	for i, llmConfig := range c.LLM {
-		if name := strings.ToLower(strings.TrimSpace(llmConfig.Name)); name != "" {
-			if _, exists := seenNames[name]; exists {
-				return fmt.Errorf("llm[%d].name 重复: %s", i, llmConfig.Name)
-			}
-			seenNames[name] = struct{}{}
-		}
-
-		if err := llmConfig.Validate(requireAPIKey); err != nil {
-			return fmt.Errorf("llm[%d]: %w", i, err)
-		}
-	}
-
-	if err := c.Database.Validate(); err != nil {
+	if err := validateDuplicateLLMNames(c.LLM); err != nil {
 		return err
 	}
 
-	if err := c.RedisSettings().Validate(); err != nil {
-		return err
+	v := newValidator()
+	if err := v.Struct(c); err != nil {
+		return formatValidationError(err)
 	}
 
 	return nil
 }
 
-// DatabaseURL 返回最终用于连接 MySQL 的 DSN。
-func (c Config) DatabaseURL() string {
-	return c.Database.ConnectionURL()
+func (c *Config) normalize() {
+	for i := range c.LLM {
+		c.LLM[i].Name = strings.TrimSpace(c.LLM[i].Name)
+		c.LLM[i].Provider = normalizeProvider(c.LLM[i].Provider)
+		c.LLM[i].APIKey = strings.TrimSpace(c.LLM[i].APIKey)
+		c.LLM[i].BaseURL = strings.TrimSpace(c.LLM[i].BaseURL)
+		c.LLM[i].Model = strings.TrimSpace(c.LLM[i].Model)
+	}
+
+	c.Agent.ID = strings.TrimSpace(c.Agent.ID)
+	c.Agent.Name = strings.TrimSpace(c.Agent.Name)
+	c.Agent.Description = strings.TrimSpace(c.Agent.Description)
+	c.Agent.Instruction = strings.TrimSpace(c.Agent.Instruction)
+
+	c.Database.URL = strings.TrimSpace(c.Database.URL)
+	c.Database.MySQL.Addr = strings.TrimSpace(c.Database.MySQL.Addr)
+	c.Database.MySQL.DBName = strings.TrimSpace(c.Database.MySQL.DBName)
+	c.Database.MySQL.Username = strings.TrimSpace(c.Database.MySQL.Username)
+	c.Database.MySQL.Password = strings.TrimSpace(c.Database.MySQL.Password)
+
+	c.Database.Redis.Addr = strings.TrimSpace(c.Database.Redis.Addr)
+	c.Database.Redis.Password = strings.TrimSpace(c.Database.Redis.Password)
+	c.Database.Redis.ShortTermTTL = strings.TrimSpace(c.Database.Redis.ShortTermTTL)
+
+	c.Redis.Addr = strings.TrimSpace(c.Redis.Addr)
+	c.Redis.Password = strings.TrimSpace(c.Redis.Password)
+	c.Redis.ShortTermTTL = strings.TrimSpace(c.Redis.ShortTermTTL)
+
+	if !c.Database.Redis.HasSettings() && c.Redis.HasSettings() {
+		c.Database.Redis = c.Redis
+	}
+	c.Redis = c.Database.Redis
 }
 
 // RedisSettings 返回最终生效的 Redis 配置，优先使用新的 database.redis 结构。
@@ -212,133 +232,31 @@ func (c LLMConfig) DisplayName(index int) string {
 	}
 }
 
-// Validate 校验单个 LLM 配置。
-func (c LLMConfig) Validate(requireAPIKey bool) error {
-	provider := normalizeProvider(c.Provider)
-	if provider != "deepseek" && provider != "openai" {
-		return fmt.Errorf("provider 暂不支持: %s", c.Provider)
-	}
-	if requireAPIKey && strings.TrimSpace(c.APIKey) == "" {
-		return fmt.Errorf("api_key 不能为空")
-	}
-	return nil
-}
-
-// ChatModelConfig 转换为 LLM 层使用的 OpenAI 兼容配置。
-func (c LLMConfig) ChatModelConfig() llm.OpenAICompatibleConfig {
-	return llm.OpenAICompatibleConfig{
-		APIKey:  strings.TrimSpace(c.APIKey),
-		BaseURL: strings.TrimSpace(c.BaseURL),
-		Model:   strings.TrimSpace(c.Model),
+// ChatModelConfig 转换为 LLM 层使用的模型配置。
+func (c LLMConfig) ChatModelConfig() llm.ChatModelConfig {
+	return llm.ChatModelConfig{
+		Provider: normalizeProvider(c.Provider),
+		APIKey:   strings.TrimSpace(c.APIKey),
+		BaseURL:  strings.TrimSpace(c.BaseURL),
+		Model:    strings.TrimSpace(c.Model),
 	}
 }
 
-// DeepSeekConfig 保留给旧调用方。
-func (c LLMConfig) DeepSeekConfig() llm.DeepSeekConfig {
-	return c.ChatModelConfig()
-}
-
-func (c *Config) applyDefaults() {
-	defaults := Default()
-	defaultLLM := defaults.LLM[0]
-
-	if len(c.LLM) == 0 {
-		c.LLM = append(c.LLM, defaultLLM)
+// DSN 返回最终生效的 MySQL 连接串。
+func (c DatabaseConfig) DSN() string {
+	if url := strings.TrimSpace(c.URL); url != "" {
+		return url
 	}
-
-	for i := range c.LLM {
-		c.LLM[i].Name = strings.TrimSpace(c.LLM[i].Name)
-		c.LLM[i].Provider = normalizeProvider(c.LLM[i].Provider)
-		c.LLM[i].APIKey = strings.TrimSpace(c.LLM[i].APIKey)
-		c.LLM[i].BaseURL = strings.TrimSpace(c.LLM[i].BaseURL)
-		c.LLM[i].Model = strings.TrimSpace(c.LLM[i].Model)
-
-		if c.LLM[i].Provider == "" {
-			c.LLM[i].Provider = defaultLLM.Provider
-		}
-
-		providerDefaults := defaultLLMConfigForProvider(c.LLM[i].Provider)
-		if c.LLM[i].BaseURL == "" {
-			c.LLM[i].BaseURL = providerDefaults.BaseURL
-		}
-		if c.LLM[i].Model == "" {
-			c.LLM[i].Model = providerDefaults.Model
-		}
+	if !c.MySQL.HasSettings() {
+		return ""
 	}
-
-	if strings.TrimSpace(c.Agent.ID) == "" {
-		c.Agent.ID = defaults.Agent.ID
-	}
-	if strings.TrimSpace(c.Agent.Name) == "" {
-		c.Agent.Name = defaults.Agent.Name
-	}
-	if strings.TrimSpace(c.Agent.Description) == "" {
-		c.Agent.Description = defaults.Agent.Description
-	}
-	if strings.TrimSpace(c.Agent.Instruction) == "" {
-		c.Agent.Instruction = defaults.Agent.Instruction
-	}
-	if c.Agent.MaxHistoryMessages <= 0 {
-		c.Agent.MaxHistoryMessages = defaults.Agent.MaxHistoryMessages
-	}
-	if c.Agent.MaxStreamChunkRunes <= 0 {
-		c.Agent.MaxStreamChunkRunes = defaults.Agent.MaxStreamChunkRunes
-	}
-
-	c.Database.MySQL.Addr = strings.TrimSpace(c.Database.MySQL.Addr)
-	c.Database.MySQL.DBName = strings.TrimSpace(c.Database.MySQL.DBName)
-	c.Database.MySQL.Username = strings.TrimSpace(c.Database.MySQL.Username)
-	c.Database.MySQL.Password = strings.TrimSpace(c.Database.MySQL.Password)
-
-	c.Database.Redis.Addr = strings.TrimSpace(c.Database.Redis.Addr)
-	c.Database.Redis.Password = strings.TrimSpace(c.Database.Redis.Password)
-	c.Database.Redis.ShortTermTTL = strings.TrimSpace(c.Database.Redis.ShortTermTTL)
-
-	c.Redis.Addr = strings.TrimSpace(c.Redis.Addr)
-	c.Redis.Password = strings.TrimSpace(c.Redis.Password)
-	c.Redis.ShortTermTTL = strings.TrimSpace(c.Redis.ShortTermTTL)
-
-	if !c.Database.Redis.HasSettings() && c.Redis.HasSettings() {
-		c.Database.Redis = c.Redis
-	}
-	if c.Database.Redis.ShortTermTTL == "" {
-		c.Database.Redis.ShortTermTTL = "24h"
-	}
-	c.Redis = c.Database.Redis
-}
-
-func defaultLLMConfig() LLMConfig {
-	return defaultLLMConfigForProvider("deepseek")
-}
-
-func defaultLLMConfigForProvider(provider string) LLMConfig {
-	switch normalizeProvider(provider) {
-	case "openai":
-		return LLMConfig{
-			Provider: "openai",
-			BaseURL:  "https://api.openai.com/v1",
-			Model:    "gpt-4o-mini",
-		}
-	default:
-		return LLMConfig{
-			Provider: "deepseek",
-			BaseURL:  "https://api.deepseek.com",
-			Model:    "deepseek-chat",
-		}
-	}
-}
-
-// ConnectionURL 返回最终生效的 MySQL 连接串，优先使用兼容旧格式的 database.url。
-func (c DatabaseConfig) ConnectionURL() string {
-	return c.MySQL.DSN()
-}
-
-// Validate 校验数据库配置。
-func (c DatabaseConfig) Validate() error {
-	if err := c.MySQL.Validate(); err != nil {
-		return fmt.Errorf("database.mysql: %w", err)
-	}
-	return nil
+	return fmt.Sprintf(
+		"%s:%s@tcp(%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",
+		strings.TrimSpace(c.MySQL.Username),
+		strings.TrimSpace(c.MySQL.Password),
+		strings.TrimSpace(c.MySQL.Addr),
+		strings.TrimSpace(c.MySQL.DBName),
+	)
 }
 
 // HasSettings 判断 MySQL 结构化配置是否被设置。
@@ -346,48 +264,132 @@ func (c MySQLConfig) HasSettings() bool {
 	return strings.TrimSpace(c.Addr) != "" || strings.TrimSpace(c.DBName) != "" || strings.TrimSpace(c.Username) != "" || strings.TrimSpace(c.Password) != ""
 }
 
-// Validate 校验结构化 MySQL 配置。
-func (c MySQLConfig) Validate() error {
-	if !c.HasSettings() {
-		return nil
-	}
-	if strings.TrimSpace(c.Addr) == "" {
-		return fmt.Errorf("addr 不能为空")
-	}
-	if strings.TrimSpace(c.DBName) == "" {
-		return fmt.Errorf("dbname 不能为空")
-	}
-	if strings.TrimSpace(c.Username) == "" {
-		return fmt.Errorf("username 不能为空")
-	}
-	return nil
-}
-
-// DSN 将结构化 MySQL 配置转换为 gorm/mysql 使用的连接串。
-func (c MySQLConfig) DSN() string {
-	if !c.HasSettings() {
-		return ""
-	}
-	return fmt.Sprintf("%s:%s@tcp(%s)/%s?charset=utf8mb4&parseTime=True&loc=Local", c.Username, c.Password, c.Addr, c.DBName)
-}
-
 // HasSettings 判断 Redis 配置是否被显式设置。
 func (c RedisConfig) HasSettings() bool {
 	return strings.TrimSpace(c.Addr) != "" || strings.TrimSpace(c.Password) != "" || c.DB != 0 || strings.TrimSpace(c.ShortTermTTL) != ""
 }
 
-// Validate 校验 Redis 配置。
-func (c RedisConfig) Validate() error {
-	if c.DB < 0 {
-		return fmt.Errorf("redis.db 不能为负数")
+func normalizeProvider(provider string) string {
+	return strings.ToLower(strings.TrimSpace(provider))
+}
+
+func validateDuplicateLLMNames(configs []LLMConfig) error {
+	seenNames := make(map[string]struct{}, len(configs))
+	for i, llmConfig := range configs {
+		name := strings.ToLower(strings.TrimSpace(llmConfig.Name))
+		if name == "" {
+			continue
+		}
+		if _, exists := seenNames[name]; exists {
+			return fmt.Errorf("llm[%d].name 重复: %s", i, llmConfig.Name)
+		}
+		seenNames[name] = struct{}{}
 	}
 	return nil
 }
 
-func normalizeProvider(provider string) string {
-	provider = strings.ToLower(strings.TrimSpace(provider))
-	if provider == "" {
-		return defaultLLMConfig().Provider
+func newValidator() *validator.Validate {
+	v := validator.New(validator.WithRequiredStructEnabled())
+	v.RegisterStructValidation(validateLLMConfig, LLMConfig{})
+	v.RegisterStructValidation(validateMySQLConfig, MySQLConfig{})
+	v.RegisterStructValidation(validateRedisConfig, RedisConfig{})
+	return v
+}
+
+func validateLLMConfig(sl validator.StructLevel) {
+	config, ok := sl.Current().Interface().(LLMConfig)
+	if !ok {
+		return
 	}
-	return provider
+
+	provider := normalizeProvider(config.Provider)
+	if provider == "" || provider == "mock" {
+		return
+	}
+
+	if strings.TrimSpace(config.BaseURL) == "" {
+		sl.ReportError(config.BaseURL, "base_url", "BaseURL", "required", "")
+	}
+	if strings.TrimSpace(config.APIKey) == "" {
+		sl.ReportError(config.APIKey, "api_key", "APIKey", "required", "")
+	}
+}
+
+func validateMySQLConfig(sl validator.StructLevel) {
+	config, ok := sl.Current().Interface().(MySQLConfig)
+	if !ok || !config.HasSettings() {
+		return
+	}
+
+	if strings.TrimSpace(config.Addr) == "" {
+		sl.ReportError(config.Addr, "addr", "Addr", "required", "")
+	}
+	if strings.TrimSpace(config.DBName) == "" {
+		sl.ReportError(config.DBName, "dbname", "DBName", "required", "")
+	}
+	if strings.TrimSpace(config.Username) == "" {
+		sl.ReportError(config.Username, "username", "Username", "required", "")
+	}
+}
+
+func validateRedisConfig(sl validator.StructLevel) {
+	config, ok := sl.Current().Interface().(RedisConfig)
+	if !ok {
+		return
+	}
+
+	if ttl := strings.TrimSpace(config.ShortTermTTL); ttl != "" {
+		if _, err := time.ParseDuration(ttl); err != nil {
+			sl.ReportError(config.ShortTermTTL, "short_term_ttl", "ShortTermTTL", "duration", "")
+		}
+	}
+}
+
+func formatValidationError(err error) error {
+	var validationErrors validator.ValidationErrors
+	if !errors.As(err, &validationErrors) {
+		return err
+	}
+
+	messages := make([]string, 0, len(validationErrors))
+	for _, validationError := range validationErrors {
+		messages = append(messages, describeValidationError(validationError))
+	}
+
+	return errors.New(strings.Join(messages, "; "))
+}
+
+func describeValidationError(err validator.FieldError) string {
+	field := validationFieldName(err)
+
+	switch err.Tag() {
+	case "required":
+		return fmt.Sprintf("%s 不能为空", field)
+	case "oneof":
+		return fmt.Sprintf("%s 仅支持: %s", field, strings.ReplaceAll(err.Param(), " ", ", "))
+	case "gte":
+		return fmt.Sprintf("%s 必须大于等于 %s", field, err.Param())
+	case "min":
+		return fmt.Sprintf("%s 至少需要 %s 项", field, err.Param())
+	case "duration":
+		return fmt.Sprintf("%s 不是有效的 time.Duration", field)
+	default:
+		return fmt.Sprintf("%s 校验失败: %s", field, err.Tag())
+	}
+}
+
+func validationFieldName(err validator.FieldError) string {
+	field := strings.TrimSpace(err.Namespace())
+	if field == "" {
+		field = strings.TrimSpace(err.StructNamespace())
+	}
+	if field == "" {
+		field = strings.TrimSpace(err.Field())
+	}
+	if field == "" {
+		field = strings.TrimSpace(err.StructField())
+	}
+	field = validationNamespaceReplacer.Replace(field)
+	field = strings.TrimPrefix(field, ".")
+	return field
 }

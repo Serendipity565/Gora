@@ -41,17 +41,14 @@ func runChat(parent context.Context, in io.Reader, out, errOut io.Writer, opts c
 
 	cfg, err := appconfig.Read(opts.ConfigPath)
 	if err != nil {
-		return fmt.Errorf("加载配置失败: %w", err)
+		panic(fmt.Errorf("加载配置失败: %w", err))
 	}
 	applyRuntimeOverrides(&cfg, opts)
+	if err := cfg.Validate(); err != nil {
+		panic(fmt.Errorf("配置校验失败: %w", err))
+	}
 
 	scanner := bufio.NewScanner(in)
-	if err := fillMissingAPIKeys(out, scanner, &cfg); err != nil {
-		return fmt.Errorf("读取 API Key 失败: %w", err)
-	}
-	if err := cfg.Validate(); err != nil {
-		return fmt.Errorf("配置校验失败: %w", err)
-	}
 
 	registry := tool.NewRegistry()
 	if err := registry.Register(builtin.NewHTTPTool()); err != nil {
@@ -60,7 +57,7 @@ func runChat(parent context.Context, in io.Reader, out, errOut io.Writer, opts c
 	fmt.Fprintf(out, "✅ 已加载 %d 个工具\n", len(registry.List()))
 
 	userID := modelSelectionUserID(opts)
-	modelStore, err := storage.OpenModelSelectionStore(parent, cfg.DatabaseURL())
+	modelStore, err := storage.OpenModelSelectionStore(parent, cfg.Database.DSN())
 	if err != nil {
 		fmt.Fprintf(errOut, "模型选择存储不可用，本次会话内仍可切换模型: %v\n", err)
 		modelStore = storage.NoopModelSelectionStore{}
@@ -183,7 +180,7 @@ func buildChatAgent(
 	previous *agent.EinoAgent,
 ) (*agent.EinoAgent, error) {
 	modelConfig := cfg.LLM[llmIndex].ChatModelConfig()
-	chatModel, err := llm.NewOpenAICompatibleEinoModel(ctx, modelConfig)
+	chatModel, err := llm.NewEinoModel(ctx, modelConfig)
 	if err != nil {
 		return nil, fmt.Errorf("初始化模型失败: %w", err)
 	}
@@ -468,30 +465,6 @@ func trimChatMessages(messages []storage.ChatMessage, max int) []storage.ChatMes
 		return messages
 	}
 	return append([]storage.ChatMessage(nil), messages[len(messages)-max:]...)
-}
-
-func fillMissingAPIKeys(out io.Writer, scanner *bufio.Scanner, cfg *appconfig.Config) error {
-	for index := range cfg.LLM {
-		if strings.TrimSpace(cfg.LLM[index].APIKey) != "" {
-			continue
-		}
-
-		provider := strings.ToUpper(strings.TrimSpace(cfg.LLM[index].Provider))
-		if provider == "" {
-			provider = "LLM"
-		}
-
-		fmt.Fprintf(out, "请输入 %s 模型 %s 的 API Key: ", provider, cfg.LLM[index].DisplayName(index))
-		if !scanner.Scan() {
-			if err := scanner.Err(); err != nil {
-				return err
-			}
-			return io.EOF
-		}
-
-		cfg.LLM[index].APIKey = strings.TrimSpace(scanner.Text())
-	}
-	return nil
 }
 
 func applyRuntimeOverrides(cfg *appconfig.Config, opts cliOptions) {

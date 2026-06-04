@@ -10,3 +10,5 @@
 .gocache/
 *.log
 .env
+
+Phase.md
