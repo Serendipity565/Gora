@@ -1,0 +1,12 @@
+# 不要带进前端镜像
+node_modules
+dist
+.vite
+.cache
+
+# 本地工具
+.git
+.idea
+.vscode
+.DS_Store
+*.log

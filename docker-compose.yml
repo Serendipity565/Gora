@@ -20,15 +20,51 @@ services:
   redis:
     image: redis:7.4-alpine
     container_name: gora-redis
+    command: ["redis-server", "--requirepass", "gora_dev_redis_password", "--appendonly", "yes"]
     ports:
       - "6379:6379"
     volumes:
       - gora-redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "gora_dev_redis_password", "--no-auth-warning", "ping"]
       interval: 5s
       timeout: 5s
       retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gora/backend:latest
+    container_name: gora-backend
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # 用环境变量覆盖 config.yaml 里的 localhost 连接信息
+      GORA_DATABASE_URL: "gora:gora_dev_password@tcp(mysql:3306)/gora?charset=utf8mb4&parseTime=True&loc=Local"
+      GORA_REDIS_ADDR: "redis:6379"
+      GORA_REDIS_PASSWORD: "gora_dev_redis_password"
+      GORA_REDIS_DB: "0"
+      GORA_SHORT_TERM_MEMORY_TTL: "24h"
+    volumes:
+      # 只读挂载本地配置（提供 LLM api_key；DB / Redis 字段被上面的 env 覆盖）
+      - ./config:/app/config:ro
+    ports:
+      - "8080:8080"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: gora/frontend:latest
+    container_name: gora-frontend
+    depends_on:
+      - backend
+    ports:
+      - "8081:80"
 
 volumes:
   gora-mysql-data:

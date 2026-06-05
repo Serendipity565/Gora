@@ -1,0 +1,30 @@
+# 不需要进入构建上下文的目录/文件
+.git
+.idea
+.vscode
+.claude
+.codex
+
+# 本地构建缓存
+.gocache
+.gopath
+.gotmp
+.cache
+bin
+
+# 前端独立构建，不参与后端镜像
+frontend
+
+# 文档与本地配置
+README.md
+AGENTS.md
+PLAN.md
+Phase.md
+*.log
+.env
+.env.*
+.DS_Store
+
+# 不要把宿主机的密钥配置带进镜像（容器内通过 volume 挂载 + 环境变量注入）
+config/config.yaml
+config/config.docker.yaml
