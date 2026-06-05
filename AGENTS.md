@@ -1,27 +1,56 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-`main.go` boots the Cobra CLI. `cmd/` contains command wiring and the interactive chat flow. `agent/` holds agent implementations and event handling. `llm/` wraps OpenAI-compatible model clients. `tool/` and `tool/builtin/` define tool interfaces and built-in tools. `storage/` contains MySQL-backed history/model selection and Redis-backed short-term memory. `config/` loads YAML settings; start from `config/config.example.yaml` and keep local overrides in `config/config.yaml`. Tests live beside the code as `*_test.go` files.
+
+入口在 `cmd/gora/main.go`，仅负责调用 `internal/cli.Execute()`。所有业务代码均位于 `internal/` 之下，按"agent 框架 / 后端框架 / 数据访问 / 装配 / CLI"分层：
+
+- `internal/agent/`：Agent 框架。
+  - `core/`：Agent 接口、`BaseAgent`、`Event` 类型、工具授权 gate（`ToolPermissionGate` 等）。
+  - `eino/`：基于 cloudwego/eino 的 `EinoAgent` 实现。
+  - `llm/`：OpenAI 兼容的 LLM 客户端封装。
+  - `tool/` + `tool/builtin/`：工具接口、注册表、内置工具（HTTP 等）。
+- `internal/server/`：Gin 后端框架（参考 muxi/FeedBack 风格分层）。
+  - `api/v1/{request,response}/`：DTO 定义。
+  - `handler/`：controller 等价物（chat/agent/tool/model/health/permission）。
+  - `service/`：业务编排（SSE chat 编排等）。
+  - `middleware/`、`router/`、`sse/`：中间件、路由集中注册、SSE 写入器。
+  - `server.go`：类型别名/函数转发，方便上层一键 import。
+- `internal/repository/`：数据访问层。
+  - `model/`：领域类型（`ChatMessage`、`ModelSelection`，无 GORM 标签）。
+  - `dao/`：MySQL 持久化（GORM）。
+  - `cache/`：Redis 短期记忆。
+  - `repository.go`：聚合别名 + Open* 入口。
+- `internal/app/`：聚合类型 `Infra`（Registry / DB / Cache），由 wire 在 `internal/wired/` 中装配。
+- `internal/ioc/`：基础设施 wire provider（`NewMySQL` / `NewRedis` / `NewToolRegistry`），聚合在 `ioc.ProviderSet` 中。
+- `internal/wired/`：wire 注入器。`wire.go`（带 `wireinject` build tag）声明 `InitInfra`，运行 `make wire` 后由 wire CLI 生成 `wire_gen.go`，cli 子命令在启动时调用它拿到 `*app.Infra` + cleanup。
+- `internal/cli/`：Cobra 命令（root/serve/chat），瘦身到只剩 flag 解析与编排。
+- `internal/config/`：YAML 配置加载与校验。
+- `configs/`：YAML 配置文件，`configs/config.example.yaml` 为模板，本地覆盖在 `configs/config.yaml`。
+- `frontend/`：可选的 Vite + TS 前端。
+
+测试文件与实现同目录（`*_test.go`）。
 
 ## Build, Test, and Development Commands
 推荐通过 `make help` 查看完整目标列表。常用入口：
-- `make server` 默认启动 Gin Web 服务（`:8080`，等价 `go run . --config config/config.yaml`）。
-- `make chat` 进入命令行交互式对话（等价 `go run . chat --config config/config.yaml`）。
+- `make server` 默认启动 Gin Web 服务（`:8080`，等价 `go run ./cmd/gora --config configs/config.yaml`）。
+- `make chat` 进入命令行交互式对话（等价 `go run ./cmd/gora chat --config configs/config.yaml`）。
 - `make frontend-dev` 启动 Vite dev server（`:5173`，`/api` 与 `/health` 自动代理到 `:8080`）；首次需先 `cd frontend && npm install`。
-- `make frontend-build` 构建前端到 `frontend/dist`；想一体化预览：`go run . --config config/config.yaml --static frontend/dist`。
+- `make frontend-build` 构建前端到 `frontend/dist`。
 - `make test` 运行 `go test ./...`；需要覆盖率时直接 `go test ./... -cover`。
+- `make wire` 重新生成 `internal/wired/wire_gen.go`；改动任意 `ProviderSet` 后必跑。
+- `make wire` 重新生成 `internal/wired/wire_gen.go`；改动任意 `ProviderSet` 后必跑。
 - `docker compose up -d mysql redis` 给 storage 相关工作准备本地依赖。
 - `gofmt -w $(rg --files -g '*.go')` 批量格式化所有 Go 源码。
-- 覆盖默认变量：`make server CONFIG=config/local.yaml ADDR=:9090`；复杂 flag 直接走 `go run .`。
+- 覆盖默认变量：`make server CONFIG=configs/local.yaml ADDR=:9090`；复杂 flag 直接走 `go run ./cmd/gora`。
 
 ## Coding Style & Naming Conventions
 Follow standard Go formatting and let `gofmt` decide indentation and spacing. Keep package names short and lowercase, exported identifiers in `CamelCase`, and error strings lowercase. Match existing config key patterns such as `max_history_messages` and `short_term_ttl`. User-facing CLI text is currently Chinese, so keep new prompts and messages consistent unless you are intentionally changing localization.
 
 ## Testing Guidelines
-Add tests next to the implementation you change, for example `cmd/chat_test.go` or `storage/model_selection_test.go`. Prefer table-driven tests for config parsing, selector logic, and storage edge cases. Name tests `TestXxx`. There is no enforced coverage gate, but touched packages should keep or improve coverage and should pass `go test ./...` before review.
+Add tests next to the implementation you change, for example `internal/cli/chat_test.go` or `internal/repository/dao/dao_test.go`. Prefer table-driven tests for config parsing, selector logic, and storage edge cases. Name tests `TestXxx`. There is no enforced coverage gate, but touched packages should keep or improve coverage and should pass `go test ./...` before review.
 
 ## Commit & Pull Request Guidelines
 Recent history uses short, imperative, lowercase commit subjects such as `add configuration files and Redis active memory store implementation`. Follow that style, keep each commit focused, and mention the subsystem when useful. PRs should describe behavior changes, config or schema impact, linked tasks, and the verification performed. Include terminal output or screenshots only when CLI behavior materially changes.
 
 ## Configuration & Security Tips
-Do not commit real API keys, database credentials, or local DSNs. Prefer environment variables such as `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `GORA_DATABASE_URL`, and `GORA_REDIS_ADDR`, or keep secrets in an untracked `config/config.yaml`.
+Do not commit real API keys, database credentials, or local DSNs. Prefer environment variables such as `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `GORA_DATABASE_URL`, and `GORA_REDIS_ADDR`, or keep secrets in an untracked `configs/config.yaml`.

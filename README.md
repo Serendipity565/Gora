@@ -31,22 +31,39 @@ Gora 把 LLM Agent 的执行过程做成一颗能直接观察的"心脏"：思�
 
 ```
 .
-├── main.go                # 程序入口，调用 cmd.Execute
-├── cmd/                   # Cobra CLI：默认启 Web 服务，子命令 chat 进 CLI 对话
-├── agent/                 # Agent 实现（Base / Eino）+ Event 类型
-├── llm/                   # OpenAI 兼容客户端封装
-├── tool/                  # 工具接口
-│   └── builtin/           # 内建工具（HTTP 等）
-├── storage/               # MySQL 聊天历史 / 模型选择 + Redis 短期记忆
-├── config/                # YAML 配置加载，附 config.example.yaml
-├── web/                   # Gin Handler、SSE Writer、内嵌静态页
-│   └── static/index.html  # 默认内嵌前端（单文件、自带样式，无需构建）
-├── frontend/              # 可选的 Vite + TS 前端
-│   ├── src/               # main.ts / api.ts / ui.ts / types.ts / style.css
-│   └── dist/              # npm run build 产物
-├── docker-compose.yml     # 本地 MySQL + Redis
-├── Makefile               # 一键启动 / 构建 / 测试入口
-└── AGENTS.md / Phase.md / PLAN.md   # 设计与规范文档
+├── cmd/
+│   └── gora/main.go              # 程序入口，调用 internal/cli.Execute
+├── internal/
+│   ├── agent/                    # Agent 框架
+│   │   ├── core/                 # Agent 接口、BaseAgent、Event、ToolPermissionGate
+│   │   ├── eino/                 # 基于 cloudwego/eino 的 EinoAgent 实现
+│   │   ├── llm/                  # OpenAI 兼容的 LLM 客户端
+│   │   └── tool/{,builtin/}      # 工具接口、注册表与内置工具（HTTP 等）
+│   ├── server/                   # Gin 后端框架
+│   │   ├── api/v1/{request,response}/  # API DTO
+│   │   ├── handler/              # controller 等价物
+│   │   ├── service/              # 业务编排（SSE chat 流）
+│   │   ├── middleware/           # Gin 中间件（CORS 等）
+│   │   ├── router/               # 集中路由注册
+│   │   ├── sse/                  # Server-Sent Events 写入器
+│   │   └── server.go             # 类型别名 + NewRouter / NewHandler 转发
+│   ├── repository/               # 数据访问层
+│   │   ├── model/                # 领域类型（ChatMessage、ModelSelection）
+│   │   ├── dao/                  # MySQL 持久化（GORM）
+│   │   ├── cache/                # Redis 短期记忆
+│   │   └── repository.go         # 别名 + Open* 入口
+│   ├── app/                      # 聚合类型 Infra（Registry/DB/Cache）
+│   ├── ioc/                      # 基础设施 wire provider（MySQL/Redis/Registry）
+│   ├── wired/                    # wire 注入器（wire.go + 生成的 wire_gen.go）
+│   ├── cli/                      # Cobra 命令（root / serve / chat）
+│   └── config/                   # YAML 配置加载与校验
+├── configs/                      # YAML 配置文件
+│   ├── config.example.yaml       # 模板
+│   └── config.yaml               # 本地覆盖（被 .gitignore）
+├── frontend/                     # 可选的 Vite + TS 前端
+├── docker-compose.yml            # 本地 MySQL + Redis
+├── Makefile                      # 一键启动 / 构建 / 测试
+└── AGENTS.md / Phase.md / PLAN.md
 ```
 
 ---
@@ -56,8 +73,8 @@ Gora 把 LLM Agent 的执行过程做成一颗能直接观察的"心脏"：思�
 ### 0. 准备配置
 
 ```bash
-cp config/config.example.yaml config/config.yaml
-# 编辑 config/config.yaml，填入你的 LLM API Key（或通过环境变量注入）
+cp configs/config.example.yaml configs/config.yaml
+# 编辑 configs/config.yaml，填入你的 LLM API Key（或通过环境变量注入）
 ```
 
 环境变量也行（推荐）：
@@ -79,7 +96,7 @@ docker compose up -d mysql redis
 
 ```bash
 make server
-# 等价于：go run . --config config/config.yaml --addr :8080
+# 等价于：go run ./cmd/gora --config configs/config.yaml --addr :8080
 ```
 
 打开 <http://localhost:8080> 即可看到内嵌的 Playground 页面。
@@ -88,7 +105,7 @@ make server
 
 ```bash
 make chat
-# 等价于：go run . chat --config config/config.yaml
+# 等价于：go run ./cmd/gora chat --config configs/config.yaml
 ```
 
 ### 4. 前端开发模式（带 HMR）
@@ -106,7 +123,7 @@ make frontend-dev            # http://localhost:5173，/api 与 /health 自动�
 
 ```bash
 make frontend-build
-go run . --config config/config.yaml --static frontend/dist
+go run ./cmd/gora --config configs/config.yaml --static frontend/dist
 ```
 
 ---
@@ -120,18 +137,19 @@ make chat            # 命令行 Agent 对话
 make frontend-dev    # Vite dev (5173)
 make frontend-build  # 构建到 frontend/dist
 make test            # go test ./...
+make wire            # 重新生成 internal/wired/wire_gen.go
 ```
 
 可覆盖变量：
 
 ```bash
-make server CONFIG=config/local.yaml ADDR=:9090
+make server CONFIG=configs/local.yaml ADDR=:9090
 ```
 
 复杂参数（如 `--model`、`--max-history`）直接走原生命令：
 
 ```bash
-go run . --config config/config.yaml --model gpt-4o-mini --max-history 50
+go run ./cmd/gora --config configs/config.yaml --model gpt-4o-mini --max-history 50
 ```
 
 ---
@@ -140,7 +158,7 @@ go run . --config config/config.yaml --model gpt-4o-mini --max-history 50
 
 | Flag | 说明 |
 |---|---|
-| `--config` | YAML 配置路径，默认 `config/config.yaml` |
+| `--config` | YAML 配置路径，默认 `configs/config.yaml` |
 | `--api-key` | 覆盖所有模型的 API Key |
 | `--base-url` | 覆盖首个模型的 OpenAI 兼容接口地址 |
 | `--model` | 覆盖首个模型名 |

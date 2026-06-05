@@ -51,7 +51,7 @@ services:
       GORA_SHORT_TERM_MEMORY_TTL: "24h"
     volumes:
       # 只读挂载本地配置（提供 LLM api_key；DB / Redis 字段被上面的 env 覆盖）
-      - ./config:/app/config:ro
+      - ./configs:/app/configs:ro
     ports:
       - "8080:8080"
 

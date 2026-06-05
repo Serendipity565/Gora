@@ -24,7 +24,7 @@ ARG TARGETARCH=amd64
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -trimpath -ldflags="-s -w" -o /out/gora .
+    go build -trimpath -ldflags="-s -w" -o /out/gora ./cmd/gora/cmd/gora
 
 # ──────────────────────────────────────────────────────────────────────
 # Stage 2: runtime
@@ -36,7 +36,7 @@ FROM alpine:3.20 AS runtime
 
 RUN apk add --no-cache ca-certificates tzdata wget \
     && addgroup -S gora && adduser -S -G gora gora \
-    && mkdir -p /app/config \
+    && mkdir -p /app/configs \
     && chown -R gora:gora /app
 
 WORKDIR /app
@@ -52,4 +52,4 @@ HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=5 \
   CMD wget -qO- http://127.0.0.1:8080/health >/dev/null 2>&1 || exit 1
 
 ENTRYPOINT ["/app/gora"]
-CMD ["--config", "/app/config/config.yaml", "--addr", ":8080"]
+CMD ["--config", "/app/configs/config.yaml", "--addr", ":8080"]
