@@ -201,21 +201,57 @@ func TestHandleListToolsSorted(t *testing.T) {
 	}
 }
 
-func TestHandleIndexReturnsEmbeddedPage(t *testing.T) {
+func TestHandleToolPermission_ResolvesPendingRequest(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
 
 	handler := NewHandler(nil)
 	router := gin.New()
-	router.GET("/", handler.HandleIndex)
+	router.POST("/api/chat/tool-permission", handler.HandleToolPermission)
 
+	requestID := agent.NewRequestID()
+	waitCh, err := handler.permissionGate.Register(requestID)
+	if err != nil {
+		t.Fatalf("register gate: %v", err)
+	}
+
+	body := `{"request_id":"` + requestID + `","approve":true,"remember":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/chat/tool-permission", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	resp := httptest.NewRecorder()
-	router.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/", nil))
+	router.ServeHTTP(resp, req)
 
 	if resp.Code != http.StatusOK {
-		t.Fatalf("unexpected status: %d", resp.Code)
+		t.Fatalf("unexpected status: %d body=%s", resp.Code, resp.Body.String())
 	}
-	if !strings.Contains(resp.Body.String(), "<title>Gora Playground</title>") {
-		t.Fatalf("expected embedded html title, got %q", resp.Body.String())
+
+	select {
+	case decision, ok := <-waitCh:
+		if !ok {
+			t.Fatal("expected decision on channel, got close")
+		}
+		if !decision.Approved || !decision.Remember {
+			t.Fatalf("unexpected decision: %#v", decision)
+		}
+	default:
+		t.Fatal("expected decision to be delivered immediately")
+	}
+}
+
+func TestHandleToolPermission_UnknownRequestReturns404(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	handler := NewHandler(nil)
+	router := gin.New()
+	router.POST("/api/chat/tool-permission", handler.HandleToolPermission)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat/tool-permission", strings.NewReader(`{"request_id":"does-not-exist","approve":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.Code)
 	}
 }

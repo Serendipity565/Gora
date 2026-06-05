@@ -1,4 +1,4 @@
-import type { AgentEvent, AgentInfo, ChatRequest, ToolInfo } from "./types";
+import type { AgentEvent, AgentInfo, ChatRequest, ModelInfo, ToolInfo } from "./types";
 
 // dev 环境通过 vite 代理把 /api 转发到 :8080；
 // 生产环境后端会直接 host 静态文件，路径相对即可。
@@ -20,6 +20,87 @@ export async function listTools(): Promise<ToolInfo[]> {
   }
   const data = (await res.json()) as { tools: ToolInfo[] };
   return data.tools ?? [];
+}
+
+/**
+ * 列出所有可选模型；后端未配置 ModelSelector 时返回 501，
+ * 这里转换成空列表，调用方可据此隐藏模型 UI。
+ */
+export async function listModels(): Promise<ModelInfo[]> {
+  const res = await fetch(`${API_BASE}/api/models`);
+  if (res.status === 501) return [];
+  if (!res.ok) {
+    throw new Error(`GET /api/models 失败: ${res.status}`);
+  }
+  const data = (await res.json()) as { models: ModelInfo[] };
+  return data.models ?? [];
+}
+
+/** 查询某 session 当前使用的模型；无显式选择时返回默认模型。 */
+export async function getCurrentModel(
+  sessionID: string,
+): Promise<{ model: ModelInfo; explicit: boolean } | null> {
+  const url = sessionID
+    ? `${API_BASE}/api/models/current?session_id=${encodeURIComponent(sessionID)}`
+    : `${API_BASE}/api/models/current`;
+  const res = await fetch(url);
+  if (res.status === 501) return null;
+  if (!res.ok) {
+    throw new Error(`GET /api/models/current 失败: ${res.status}`);
+  }
+  return (await res.json()) as { model: ModelInfo; explicit: boolean };
+}
+
+/** 把某 session 切换到 selector 指定的模型，selector 可以是 index/name/model。 */
+export async function selectModel(sessionID: string, selector: string): Promise<ModelInfo> {
+  const res = await fetch(`${API_BASE}/api/models/select`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      session_id: sessionID,
+      selector,
+    }),
+  });
+  if (!res.ok) {
+    let detail = "";
+    try {
+      detail = (await res.text()).slice(0, 200);
+    } catch {
+      // ignore
+    }
+    throw new Error(`POST /api/models/select 失败: ${res.status} ${detail}`);
+  }
+  const data = (await res.json()) as { model: ModelInfo };
+  return data.model;
+}
+
+/**
+ * 把"是否允许调用某个被禁用的工具"的决定回写给后端。
+ * 后端会唤醒等待中的 Agent goroutine，继续/放弃该工具调用。
+ */
+export async function resolveToolPermission(
+  requestID: string,
+  approve: boolean,
+  remember = false,
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/chat/tool-permission`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      request_id: requestID,
+      approve,
+      remember,
+    }),
+  });
+  if (!res.ok) {
+    let detail = "";
+    try {
+      detail = (await res.text()).slice(0, 200);
+    } catch {
+      // ignore
+    }
+    throw new Error(`POST /api/chat/tool-permission 失败: ${res.status} ${detail}`);
+  }
 }
 
 /**

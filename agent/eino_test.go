@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -161,6 +162,149 @@ func TestEinoAgent_ToolCalling(t *testing.T) {
 	}
 	if !gotDone {
 		t.Fatal("expected done event")
+	}
+}
+
+func TestEinoAgent_DisabledToolBlocksExecution(t *testing.T) {
+	registry := gotool.NewRegistry()
+	if err := registry.Register(&fakeSearchTool{}); err != nil {
+		t.Fatalf("register tool failed: %v", err)
+	}
+
+	// 模型先尝试调用 mock_search，被用户拒绝后改为直接回答。
+	model := &fakeToolCallingModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{{
+				ID:   "call_disabled",
+				Type: "function",
+				Function: schema.FunctionCall{
+					Name:      "mock_search",
+					Arguments: `{"query":"北京天气"}`,
+				},
+			}}),
+			schema.AssistantMessage("抱歉，由于工具被关闭无法查询，请稍后再试。", nil),
+		},
+	}
+
+	einoAgent, err := NewEinoAgent("test-eino-disabled", DefaultEinoConfig(model, registry))
+	if err != nil {
+		t.Fatalf("NewEinoAgent failed: %v", err)
+	}
+
+	gate := NewToolPermissionGate()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ctx = WithDisabledTools(ctx, []string{"mock_search"})
+	ctx = WithToolPermissionGate(ctx, gate)
+
+	events := einoAgent.Run(ctx, "北京天气怎么样？")
+
+	var (
+		permissionRequestID string
+		gotPermissionEvent  bool
+		gotToolCall         bool
+		assistantContent    string
+		gotDone             bool
+	)
+	for event := range events {
+		switch event.Type {
+		case EventToolPermissionRequest:
+			gotPermissionEvent = true
+			if id, ok := event.Metadata["request_id"].(string); ok {
+				permissionRequestID = id
+			}
+			// 模拟用户点击「拒绝」。
+			if !gate.Resolve(permissionRequestID, ToolPermissionDecision{Approved: false}) {
+				t.Fatalf("expected gate.Resolve to hit pending entry %q", permissionRequestID)
+			}
+		case EventToolCall:
+			gotToolCall = true
+		case EventChunk:
+			assistantContent += event.Content
+		case EventDone:
+			gotDone = true
+		case EventError:
+			t.Fatalf("unexpected error: %s", event.Content)
+		}
+	}
+
+	if !gotPermissionEvent {
+		t.Fatal("expected tool_permission_request event")
+	}
+	if permissionRequestID == "" {
+		t.Fatal("expected request_id in permission event metadata")
+	}
+	if gotToolCall {
+		t.Fatal("denied tool should not emit tool_call event")
+	}
+	if !gotDone {
+		t.Fatal("expected done event after denial")
+	}
+	if !strings.Contains(assistantContent, "抱歉") {
+		t.Fatalf("expected assistant to fall back gracefully, got %q", assistantContent)
+	}
+}
+
+func TestEinoAgent_DisabledToolApprovedRunsTool(t *testing.T) {
+	registry := gotool.NewRegistry()
+	if err := registry.Register(&fakeSearchTool{}); err != nil {
+		t.Fatalf("register tool failed: %v", err)
+	}
+
+	model := &fakeToolCallingModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{{
+				ID:   "call_approved",
+				Type: "function",
+				Function: schema.FunctionCall{
+					Name:      "mock_search",
+					Arguments: `{"query":"北京天气"}`,
+				},
+			}}),
+			schema.AssistantMessage("根据搜索结果，今天北京晴朗 25°C。", nil),
+		},
+	}
+
+	einoAgent, err := NewEinoAgent("test-eino-approve", DefaultEinoConfig(model, registry))
+	if err != nil {
+		t.Fatalf("NewEinoAgent failed: %v", err)
+	}
+
+	gate := NewToolPermissionGate()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ctx = WithDisabledTools(ctx, []string{"mock_search"})
+	ctx = WithToolPermissionGate(ctx, gate)
+
+	events := einoAgent.Run(ctx, "北京天气怎么样？")
+
+	var (
+		toolResult         string
+		gotPermissionEvent bool
+	)
+	for event := range events {
+		switch event.Type {
+		case EventToolPermissionRequest:
+			gotPermissionEvent = true
+			id, _ := event.Metadata["request_id"].(string)
+			// 模拟用户点击「允许」。
+			if !gate.Resolve(id, ToolPermissionDecision{Approved: true}) {
+				t.Fatalf("expected gate.Resolve to hit pending entry %q", id)
+			}
+		case EventToolResult:
+			toolResult = event.Content
+		case EventError:
+			t.Fatalf("unexpected error: %s", event.Content)
+		}
+	}
+
+	if !gotPermissionEvent {
+		t.Fatal("expected tool_permission_request event")
+	}
+	if !strings.Contains(toolResult, "搜索结果") {
+		t.Fatalf("expected real tool execution result, got %q", toolResult)
 	}
 }
 

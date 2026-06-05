@@ -51,6 +51,78 @@ body {
   align-items: center;
   justify-content: space-between;
   flex-shrink: 0;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.header-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.header-field-label {
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-size: 10.5px;
+}
+
+.header-select,
+.header-input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12.5px;
+  outline: none;
+  transition: border-color var(--transition);
+  min-width: 120px;
+}
+
+.header-input { width: 180px; }
+.header-select { min-width: 140px; }
+
+.header-select:focus,
+.header-input:focus {
+  border-color: var(--accent);
+}
+
+.header-btn {
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 6px 12px;
+  font-family: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: filter var(--transition), border-color var(--transition), transform var(--transition);
+}
+
+.header-btn:hover {
+  filter: brightness(1.15);
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+@media (max-width: 720px) {
+  .header { gap: 10px; }
+  .header-controls { width: 100%; justify-content: flex-start; }
+  .header-input { width: 140px; }
+  .header-select { min-width: 110px; }
 }
 
 .logo {
@@ -264,6 +336,101 @@ body {
   background: rgba(248, 81, 73, 0.1);
   border-left: 3px solid var(--error);
   color: var(--error);
+}
+
+/* 工具授权请求气泡 */
+.event-permission {
+  background: rgba(210, 153, 29, 0.10);
+  border-left: 3px solid var(--warning);
+  color: var(--text);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.event-permission .permission-header {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.event-permission .permission-header strong {
+  color: var(--warning);
+}
+
+.event-permission .permission-args {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 12px;
+  color: var(--text-secondary);
+  max-height: 140px;
+  overflow: auto;
+  white-space: pre;
+}
+
+.event-permission .permission-status {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+.event-permission .permission-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.permission-btn {
+  flex: 1 1 auto;
+  min-width: 90px;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: filter var(--transition), border-color var(--transition), transform var(--transition);
+}
+
+.permission-btn:hover:not(:disabled) {
+  filter: brightness(1.1);
+  transform: translateY(-1px);
+}
+
+.permission-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.permission-btn.allow {
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.permission-btn.allow-remember {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.permission-btn.deny {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.event-permission.permission-resolved.approved {
+  border-left-color: var(--success);
+  background: rgba(63, 185, 80, 0.10);
+}
+
+.event-permission.permission-resolved.denied {
+  border-left-color: var(--error);
+  background: rgba(248, 81, 73, 0.08);
 }
 
 /* thinking 节点在收到 done 事件后会被改写成 .event-done，
@@ -514,6 +681,68 @@ body {
 .metric-value.success { color: var(--success); }
 .metric-value.tool { color: var(--tool); }
 
+/* 可折叠 section */
+.collapsible-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.collapsible-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 0;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: var(--text-secondary);
+  text-align: left;
+  transition: color var(--transition);
+}
+
+.collapsible-header:hover { color: var(--text); }
+.collapsible-header:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.collapsible-title {
+  font-weight: 600;
+}
+
+.collapsible-chevron {
+  display: inline-block;
+  font-size: 11px;
+  line-height: 1;
+  transition: transform var(--transition);
+  color: var(--text-secondary);
+}
+
+.collapsible-section.collapsed .collapsible-chevron {
+  transform: rotate(-90deg);
+}
+
+.collapsible-content {
+  margin-top: 10px;
+  overflow: hidden;
+  max-height: 4000px;
+  opacity: 1;
+  transition: max-height 0.25s ease, opacity 0.18s ease, margin-top 0.2s ease;
+}
+
+.collapsible-section.collapsed .collapsible-content {
+  max-height: 0;
+  margin-top: 0;
+  opacity: 0;
+}
+
 .tool-list {
   display: flex;
   flex-direction: column;
@@ -555,4 +784,85 @@ body {
   color: var(--text-secondary);
   font-size: 12px;
   margin-top: 4px;
+}
+
+/* 工具开关样式 */
+.tool-item.tool-entry {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  transition: opacity var(--transition), border-color var(--transition);
+}
+
+.tool-item.tool-entry .tool-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.tool-item.tool-entry.disabled {
+  opacity: 0.55;
+}
+
+.tool-item.tool-entry.disabled .tool-name {
+  text-decoration: line-through;
+  color: var(--text-secondary);
+}
+
+/* 滑动开关 */
+.tool-switch {
+  position: relative;
+  display: inline-block;
+  width: 32px;
+  height: 18px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.tool-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  cursor: pointer;
+  z-index: 1;
+}
+
+.tool-switch-slider {
+  position: absolute;
+  inset: 0;
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  transition: background var(--transition), border-color var(--transition);
+  pointer-events: none;
+}
+
+.tool-switch-slider::before {
+  content: "";
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  left: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: var(--text-secondary);
+  border-radius: 50%;
+  transition: transform var(--transition), background var(--transition);
+}
+
+.tool-switch input:checked + .tool-switch-slider {
+  background: var(--accent-glow);
+  border-color: var(--accent);
+}
+
+.tool-switch input:checked + .tool-switch-slider::before {
+  transform: translate(14px, -50%);
+  background: var(--accent);
+}
+
+.tool-switch input:focus-visible + .tool-switch-slider {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }

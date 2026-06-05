@@ -53,3 +53,20 @@ func NewDoneEvent(agentID string) Event {
 func NewErrorEvent(agentID string, err error) Event {
 	return NewEvent(EventError, agentID, err.Error())
 }
+
+// NewToolPermissionRequestEvent 创建工具授权请求事件，
+// 前端收到后应弹出"是否允许调用 toolName"的询问 UI，
+// 拿到用户决定后通过 /api/chat/tool-permission 回写。
+func NewToolPermissionRequestEvent(agentID, requestID, toolName string, args map[string]any) Event {
+	return Event{
+		Type:      EventToolPermissionRequest,
+		AgentID:   agentID,
+		Content:   toolName,
+		Timestamp: time.Now(),
+		Metadata: map[string]any{
+			"request_id": requestID,
+			"tool":       toolName,
+			"args":       args,
+		},
+	}
+}

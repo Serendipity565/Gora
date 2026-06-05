@@ -426,6 +426,20 @@ func (g *goraInvokableTool) InvokableRun(ctx context.Context, argumentsInJSON st
 		}
 	}
 
+	// 命中"被前端关闭"的工具：
+	//   - 若 ctx 中有 ToolPermissionGate，则发起一次询问，等用户答复后再决定执行 / 拒绝；
+	//   - 否则直接拒绝并把原因回写给模型。
+	if IsToolDisabled(ctx, g.tool.Name()) {
+		approved, err := g.askPermission(ctx, args)
+		if err != nil {
+			return "", err
+		}
+		if !approved {
+			return refusalMessage(g.tool.Name()), nil
+		}
+		// 用户允许后继续走正常执行路径。
+	}
+
 	if payload, ok := getToolEventEmitter(ctx); ok {
 		if !payload.emit(NewToolCallEvent(payload.agentID, g.tool.Name(), args)) {
 			return "", context.Canceled
@@ -445,4 +459,46 @@ func (g *goraInvokableTool) InvokableRun(ctx context.Context, argumentsInJSON st
 	}
 
 	return result, err
+}
+
+// askPermission 向前端发起"是否允许调用 toolName"的询问，等待用户答复。
+// 返回值表示是否被允许执行；err 仅在 ctx 取消等异常时返回。
+func (g *goraInvokableTool) askPermission(ctx context.Context, args map[string]any) (bool, error) {
+	gate, ok := toolPermissionGateFromContext(ctx)
+	if !ok {
+		// 没有 gate 时退化为"直接拒绝"。
+		return false, nil
+	}
+
+	requestID := NewRequestID()
+	waitCh, err := gate.Register(requestID)
+	if err != nil {
+		return false, nil
+	}
+
+	payload, hasEmitter := getToolEventEmitter(ctx)
+	if hasEmitter {
+		if !payload.emit(NewToolPermissionRequestEvent(payload.agentID, requestID, g.tool.Name(), args)) {
+			gate.Cancel(requestID)
+			return false, context.Canceled
+		}
+	}
+
+	select {
+	case <-ctx.Done():
+		gate.Cancel(requestID)
+		return false, ctx.Err()
+	case decision, alive := <-waitCh:
+		if !alive {
+			// gate 被外部 Cancel 掉，按拒绝处理。
+			return false, nil
+		}
+		return decision.Approved, nil
+	}
+}
+
+// refusalMessage 构造拒绝提示，会被作为 tool 的返回值回写给模型，
+// 同时也通过 tool_result 事件发送到前端。
+func refusalMessage(toolName string) string {
+	return fmt.Sprintf("用户拒绝授权调用工具 %s，请改用其他工具或直接回答。", toolName)
 }

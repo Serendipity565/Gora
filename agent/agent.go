@@ -37,12 +37,13 @@ func (s State) String() string {
 type EventType int
 
 const (
-	EventThinking   EventType = iota // Agent 正在思考
-	EventToolCall                    // Agent 正在调用工具
-	EventToolResult                  // 工具已返回结果
-	EventChunk                       // LLM 或 Agent 输出的流式片段
-	EventDone                        // 当前轮次已完成
-	EventError                       // 当前轮次发生错误
+	EventThinking              EventType = iota // Agent 正在思考
+	EventToolCall                               // Agent 正在调用工具
+	EventToolResult                             // 工具已返回结果
+	EventChunk                                  // LLM 或 Agent 输出的流式片段
+	EventDone                                   // 当前轮次已完成
+	EventError                                  // 当前轮次发生错误
+	EventToolPermissionRequest                  // 请求用户确认是否允许调用某个工具（被前端关闭过）
 )
 
 func (e EventType) String() string {
@@ -59,6 +60,8 @@ func (e EventType) String() string {
 		return "done"
 	case EventError:
 		return "error"
+	case EventToolPermissionRequest:
+		return "tool_permission_request"
 	default:
 		return "unknown"
 	}

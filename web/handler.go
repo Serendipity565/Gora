@@ -19,6 +19,9 @@ type ChatRequest struct {
 	Message   string `json:"message" binding:"required"`
 	AgentID   string `json:"agent_id"`
 	SessionID string `json:"session_id"`
+	// DisabledTools 是用户在前端 UI 中关闭的工具名集合，
+	// HandleChat 会通过 context 把它透传给 Agent，命中名单的工具会被直接拒绝执行。
+	DisabledTools []string `json:"disabled_tools,omitempty"`
 }
 
 // AgentInfo 是返回给前端的 Agent 元信息。
@@ -36,6 +39,29 @@ type ToolInfo struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description"`
 	Parameters  map[string]any `json:"parameters,omitempty"`
+}
+
+// ModelInfo 是前端可见的可选模型项。
+type ModelInfo struct {
+	Index    int    `json:"index"`
+	Name     string `json:"name,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model"`
+	Display  string `json:"display"`
+}
+
+// ModelSelector 抽象"列出 / 读取 / 切换模型"的能力，
+// 由 cmd 层基于 sessionAgentRunner + ModelSelectionStore 实现。
+type ModelSelector interface {
+	// ListModels 返回当前配置中所有可用模型，顺序与配置一致。
+	ListModels() []ModelInfo
+	// CurrentModel 返回给定 session 当前使用的模型；
+	// session 为空表示默认会话。第二个返回值表示 session 是否有显式选择，
+	// 没有时返回的 ModelInfo 是回退使用的默认值。
+	CurrentModel(ctx context.Context, sessionID string) (ModelInfo, bool, error)
+	// SelectModel 把 selector（序号 / name / model）转换为索引并持久化为 session 的选择，
+	// 返回最终生效的 ModelInfo。
+	SelectModel(ctx context.Context, sessionID, selector string) (ModelInfo, error)
 }
 
 // AgentRunner 抽象 Agent 的运行能力，避免与具体类型耦合。
@@ -59,6 +85,13 @@ type Handler struct {
 
 	model       string
 	chatTimeout time.Duration
+
+	// permissionGate 在所有 chat 会话间共享，前端通过 HandleToolPermission
+	// 把"是否允许调用某个被禁用的工具"的决定写回给等待中的 Agent。
+	permissionGate *agent.ToolPermissionGate
+
+	// modelSelector 提供"列模型 / 切模型"的能力；nil 时模型相关接口返回 501。
+	modelSelector ModelSelector
 }
 
 // HandlerOption 配置 Handler 的可选项。
@@ -80,12 +113,21 @@ func WithChatTimeout(d time.Duration) HandlerOption {
 	}
 }
 
+// WithModelSelector 注入一个 ModelSelector，启用 /api/models 系列接口。
+// 不调用时模型接口会返回 501，前端可据此隐藏模型选择 UI。
+func WithModelSelector(selector ModelSelector) HandlerOption {
+	return func(h *Handler) {
+		h.modelSelector = selector
+	}
+}
+
 // NewHandler 创建一个 Handler。
 func NewHandler(registry *tool.Registry, opts ...HandlerOption) *Handler {
 	h := &Handler{
-		agents:      make(map[string]AgentRunner),
-		registry:    registry,
-		chatTimeout: 5 * time.Minute,
+		agents:         make(map[string]AgentRunner),
+		registry:       registry,
+		chatTimeout:    5 * time.Minute,
+		permissionGate: agent.NewToolPermissionGate(),
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -134,6 +176,11 @@ func (h *Handler) HandleChat(c *gin.Context) {
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), h.chatTimeout)
 	defer cancel()
+
+	// 把"被用户关闭的工具"集合附加到 context，
+	// 让 Agent 在 InvokableRun 中按需拒绝执行 / 发起授权询问。
+	ctx = agent.WithDisabledTools(ctx, req.DisabledTools)
+	ctx = agent.WithToolPermissionGate(ctx, h.permissionGate)
 
 	var events <-chan agent.Event
 	if sessionRunner, ok := a.(SessionRunner); ok {
@@ -210,14 +257,95 @@ func (h *Handler) HandleListTools(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"tools": infos})
 }
 
-// HandleIndex 返回内嵌前端页面。
-func (h *Handler) HandleIndex(c *gin.Context) {
-	page, err := IndexHTML()
-	if err != nil {
-		c.String(http.StatusInternalServerError, "load index page: %v", err)
+// ModelSelectRequest 描述一次模型切换请求体。
+type ModelSelectRequest struct {
+	// SessionID 为空时使用默认会话。
+	SessionID string `json:"session_id"`
+	// Selector 可以是序号（"1"）、name 或 model 字符串。
+	Selector string `json:"selector" binding:"required"`
+}
+
+// HandleListModels 列出当前配置中所有可选模型。
+func (h *Handler) HandleListModels(c *gin.Context) {
+	if h.modelSelector == nil {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "model selector not configured"})
 		return
 	}
-	c.Data(http.StatusOK, "text/html; charset=utf-8", page)
+	c.JSON(http.StatusOK, gin.H{"models": h.modelSelector.ListModels()})
+}
+
+// HandleGetCurrentModel 返回某会话当前使用的模型。
+// session_id 通过 query 传入；为空表示默认会话。
+func (h *Handler) HandleGetCurrentModel(c *gin.Context) {
+	if h.modelSelector == nil {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "model selector not configured"})
+		return
+	}
+
+	sessionID := strings.TrimSpace(c.Query("session_id"))
+	info, explicit, err := h.modelSelector.CurrentModel(c.Request.Context(), sessionID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"model":    info,
+		"explicit": explicit,
+	})
+}
+
+// HandleSelectModel 设置某会话使用的模型。
+func (h *Handler) HandleSelectModel(c *gin.Context) {
+	if h.modelSelector == nil {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "model selector not configured"})
+		return
+	}
+
+	var req ModelSelectRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	info, err := h.modelSelector.SelectModel(c.Request.Context(), strings.TrimSpace(req.SessionID), strings.TrimSpace(req.Selector))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"model": info})
+}
+
+// ToolPermissionRequestBody 描述前端确认/拒绝某次工具授权的请求体。
+type ToolPermissionRequestBody struct {
+	RequestID string `json:"request_id" binding:"required"`
+	Approve   bool   `json:"approve"`
+	Remember  bool   `json:"remember,omitempty"`
+}
+
+// HandleToolPermission 由前端在弹窗中得到用户决定后调用，
+// 把决定写回正在等待的 Agent goroutine。
+func (h *Handler) HandleToolPermission(c *gin.Context) {
+	var req ToolPermissionRequestBody
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if h.permissionGate == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "permission gate not configured"})
+		return
+	}
+
+	resolved := h.permissionGate.Resolve(req.RequestID, agent.ToolPermissionDecision{
+		Approved: req.Approve,
+		Remember: req.Remember,
+	})
+	if !resolved {
+		// request_id 已过期 / 不存在（典型情况：用户点击太晚或 Agent 已被取消）。
+		c.JSON(http.StatusNotFound, gin.H{"error": "permission request not found or already resolved"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"resolved": true})
 }
 
 func (h *Handler) resolveAgent(id string) (AgentRunner, bool) {

@@ -30,6 +30,49 @@ export function scrollToBottom(container: HTMLElement): void {
   container.scrollTop = container.scrollHeight;
 }
 
+/** 清空对话区，开启新会话时调用。 */
+export function clearMessages(container: HTMLElement): void {
+  container.innerHTML = "";
+}
+
+/**
+ * 把 AgentInfo 列表渲染为 <select> 选项；若 currentID 命中其中之一会保留选中。
+ * 返回最终生效的 agent_id（可能与传入不同：传入为空时回落到第一个）。
+ */
+export function renderAgentOptions(
+  selectEl: HTMLSelectElement,
+  agents: { id: string; model?: string; type?: string }[],
+  currentID: string,
+): string {
+  selectEl.innerHTML = "";
+  if (agents.length === 0) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "（无已注册 agent）";
+    selectEl.appendChild(option);
+    selectEl.disabled = true;
+    return "";
+  }
+  selectEl.disabled = false;
+  let resolvedID = "";
+  for (const agent of agents) {
+    const option = document.createElement("option");
+    option.value = agent.id;
+    const suffix = agent.model ? ` · ${agent.model}` : agent.type ? ` · ${agent.type}` : "";
+    option.textContent = `${agent.id}${suffix}`;
+    if (agent.id === currentID) {
+      option.selected = true;
+      resolvedID = agent.id;
+    }
+    selectEl.appendChild(option);
+  }
+  if (!resolvedID) {
+    selectEl.selectedIndex = 0;
+    resolvedID = selectEl.value;
+  }
+  return resolvedID;
+}
+
 export function appendUserBubble(container: HTMLElement, text: string): void {
   const wrapper = document.createElement("div");
   wrapper.className = "message user";
@@ -41,15 +84,29 @@ export function appendUserBubble(container: HTMLElement, text: string): void {
   scrollToBottom(container);
 }
 
+export interface PermissionDecision {
+  requestID: string;
+  toolName: string;
+  approve: boolean;
+  remember: boolean;
+}
+
+export type PermissionHandler = (decision: PermissionDecision) => Promise<void>;
+
 export interface AgentBubbleHandle {
   bubble: HTMLDivElement;
   /** 流式输出节点，按需创建。 */
   streamTarget: HTMLDivElement | null;
   /** 已累积的原始 markdown 文本（用于增量重渲染）。 */
   streamRaw: string;
+  /** 收到 tool_permission_request 时调用的回调，由 main 注入。 */
+  onPermission?: PermissionHandler;
 }
 
-export function appendAgentBubble(container: HTMLElement): AgentBubbleHandle {
+export function appendAgentBubble(
+  container: HTMLElement,
+  onPermission?: PermissionHandler,
+): AgentBubbleHandle {
   const wrapper = document.createElement("div");
   wrapper.className = "message agent";
   wrapper.innerHTML = `<div class="avatar agent">🦍</div>`;
@@ -58,7 +115,7 @@ export function appendAgentBubble(container: HTMLElement): AgentBubbleHandle {
   wrapper.appendChild(bubble);
   container.appendChild(wrapper);
   scrollToBottom(container);
-  return { bubble, streamTarget: null, streamRaw: "" };
+  return { bubble, streamTarget: null, streamRaw: "", onPermission };
 }
 
 export function appendEventNode(
@@ -113,6 +170,65 @@ export function applyEvent(
         "event-tool-result",
         `${header}\n${escapeHtml(event.content ?? "")}`,
       );
+      return handle;
+    }
+
+    case "tool_permission_request": {
+      const requestID = String(event.metadata?.["request_id"] ?? "");
+      const toolName = String(event.metadata?.["tool"] ?? event.content ?? "");
+      const args = event.metadata?.["args"];
+      const argsHtml =
+        args !== undefined
+          ? `<pre class="permission-args">${escapeHtml(JSON.stringify(args, null, 2))}</pre>`
+          : "";
+      const node = appendEventNode(
+        handle.bubble,
+        "event-permission",
+        `
+          <div class="permission-header">
+            🔐 模型请求调用工具 <strong>${escapeHtml(toolName)}</strong>，该工具当前已被你关闭。
+          </div>
+          ${argsHtml}
+          <div class="permission-status">是否本次允许调用？</div>
+          <div class="permission-actions">
+            <button type="button" class="permission-btn allow" data-action="allow-once">允许一次</button>
+            <button type="button" class="permission-btn allow-remember" data-action="allow-remember">允许并启用</button>
+            <button type="button" class="permission-btn deny" data-action="deny">拒绝</button>
+          </div>
+        `,
+      );
+
+      const handlerCb = handle.onPermission;
+      if (handlerCb && requestID) {
+        node.querySelectorAll<HTMLButtonElement>(".permission-btn").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            const action = btn.dataset["action"];
+            if (!action) return;
+            // 立刻锁定按钮，避免重复点击。
+            node.querySelectorAll<HTMLButtonElement>(".permission-btn").forEach((b) => {
+              b.disabled = true;
+            });
+            const decision: PermissionDecision = {
+              requestID,
+              toolName,
+              approve: action !== "deny",
+              remember: action === "allow-remember",
+            };
+            handlerCb(decision)
+              .then(() => {
+                markPermissionResolved(node, decision);
+              })
+              .catch((err: Error) => {
+                markPermissionResolved(node, decision, err.message);
+              });
+          });
+        });
+      } else {
+        // 缺少 request_id 或没有回调注册时，按钮置灰。
+        node.querySelectorAll<HTMLButtonElement>(".permission-btn").forEach((b) => {
+          b.disabled = true;
+        });
+      }
       return handle;
     }
 
@@ -192,16 +308,172 @@ export function renderToolList(container: HTMLElement, tools: ToolInfo[]): void 
     container.innerHTML = `<div class="tool-item placeholder">没有已注册的工具</div>`;
     return;
   }
+  const disabled = loadDisabledTools();
   container.innerHTML = "";
   for (const tool of tools) {
     const item = document.createElement("div");
-    item.className = "tool-item";
+    const isDisabled = disabled.has(tool.name);
+    item.className = `tool-item tool-entry${isDisabled ? " disabled" : ""}`;
+    const safeName = escapeHtml(tool.name);
     item.innerHTML = `
-      <div class="tool-name">${escapeHtml(tool.name)}</div>
-      <div class="tool-desc">${escapeHtml(tool.description)}</div>
+      <div class="tool-info">
+        <div class="tool-name">${safeName}</div>
+        <div class="tool-desc">${escapeHtml(tool.description)}</div>
+      </div>
+      <label class="tool-switch" title="启用 / 关闭工具" aria-label="启用或关闭 ${safeName}">
+        <input type="checkbox" data-tool="${safeName}" ${isDisabled ? "" : "checked"} />
+        <span class="tool-switch-slider"></span>
+      </label>
     `;
+
+    const checkbox = item.querySelector<HTMLInputElement>("input[type=checkbox]");
+    checkbox?.addEventListener("change", () => {
+      const set = loadDisabledTools();
+      if (checkbox.checked) {
+        set.delete(tool.name);
+        item.classList.remove("disabled");
+      } else {
+        set.add(tool.name);
+        item.classList.add("disabled");
+      }
+      saveDisabledTools(set);
+      container.dispatchEvent(
+        new CustomEvent("tool-toggle", {
+          detail: { name: tool.name, enabled: checkbox.checked },
+          bubbles: true,
+        }),
+      );
+    });
+
     container.appendChild(item);
   }
+}
+
+const DISABLED_TOOLS_KEY = "gora.disabledTools";
+
+function loadDisabledTools(): Set<string> {
+  try {
+    const raw = localStorage.getItem(DISABLED_TOOLS_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed)) {
+      return new Set(parsed.filter((x): x is string => typeof x === "string"));
+    }
+  } catch {
+    // 解析失败时回退到空集，不阻塞 UI。
+  }
+  return new Set();
+}
+
+function saveDisabledTools(set: Set<string>): void {
+  try {
+    localStorage.setItem(DISABLED_TOOLS_KEY, JSON.stringify([...set]));
+  } catch {
+    // localStorage 不可用时静默忽略（如隐私模式）。
+  }
+}
+
+/** 当前被关闭的工具名集合。 */
+export function getDisabledTools(): Set<string> {
+  return loadDisabledTools();
+}
+
+/**
+ * 把工具从禁用集合中移除（用于"允许并启用"流程）。
+ * 同时同步刷新 toolList 内对应开关的视觉状态。
+ */
+export function enableTool(toolName: string, toolListRoot?: HTMLElement | null): void {
+  const set = loadDisabledTools();
+  if (!set.has(toolName)) return;
+  set.delete(toolName);
+  saveDisabledTools(set);
+  if (toolListRoot) {
+    toolListRoot
+      .querySelectorAll<HTMLInputElement>(`input[type=checkbox][data-tool="${cssEscape(toolName)}"]`)
+      .forEach((input) => {
+        input.checked = true;
+        input.closest(".tool-entry")?.classList.remove("disabled");
+      });
+  }
+}
+
+function cssEscape(value: string): string {
+  // CSS.escape 在所有现代浏览器都有，但仍兜底一下。
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+    return CSS.escape(value);
+  }
+  return value.replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+}
+
+/**
+ * 把权限气泡更新为"已处理"状态。
+ */
+function markPermissionResolved(
+  node: HTMLElement,
+  decision: PermissionDecision,
+  errorMessage?: string,
+): void {
+  const status = node.querySelector<HTMLDivElement>(".permission-status");
+  const actions = node.querySelector<HTMLDivElement>(".permission-actions");
+  if (errorMessage) {
+    if (status) status.textContent = `❌ 提交失败：${errorMessage}`;
+    node.querySelectorAll<HTMLButtonElement>(".permission-btn").forEach((b) => {
+      b.disabled = false;
+    });
+    return;
+  }
+  if (status) {
+    if (decision.approve && decision.remember) {
+      status.textContent = `✅ 已允许并重新启用工具 ${decision.toolName}`;
+    } else if (decision.approve) {
+      status.textContent = `✅ 已允许本次调用 ${decision.toolName}`;
+    } else {
+      status.textContent = `🚫 已拒绝调用 ${decision.toolName}`;
+    }
+  }
+  if (actions) actions.remove();
+  node.classList.add("permission-resolved");
+  node.classList.toggle("approved", decision.approve);
+  node.classList.toggle("denied", !decision.approve);
+}
+
+/**
+ * 让侧栏中带有 data-section 的 section 支持点击折叠/展开，
+ * 并将状态记忆到 localStorage 中。
+ */
+export function wireCollapsibleSections(root: ParentNode = document): void {
+  const sections = root.querySelectorAll<HTMLElement>(".collapsible-section");
+  sections.forEach((section) => {
+    const header = section.querySelector<HTMLButtonElement>(".collapsible-header");
+    if (!header) return;
+
+    const sectionKey = section.dataset["section"] ?? "";
+    const storageKey = sectionKey ? `gora.collapsed.${sectionKey}` : "";
+
+    if (storageKey) {
+      try {
+        if (localStorage.getItem(storageKey) === "1") {
+          section.classList.add("collapsed");
+          header.setAttribute("aria-expanded", "false");
+        }
+      } catch {
+        // 忽略
+      }
+    }
+
+    header.addEventListener("click", () => {
+      const collapsed = section.classList.toggle("collapsed");
+      header.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      if (storageKey) {
+        try {
+          if (collapsed) localStorage.setItem(storageKey, "1");
+          else localStorage.removeItem(storageKey);
+        } catch {
+          // 忽略
+        }
+      }
+    });
+  });
 }
 
 export function renderAgentMeta(

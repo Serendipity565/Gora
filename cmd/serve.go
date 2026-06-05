@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -26,9 +25,11 @@ import (
 )
 
 // serveOptions 控制 web 服务的运行参数。
+//
+// Gora 后端只提供 JSON / SSE API；前端是独立的 Vite 项目，通过浏览器直接访问 :8080。
+// 因此默认开启 CORS，允许 vite dev server / 任意 origin 的前端跨域访问。
 type serveOptions struct {
-	StaticDir string
-	CORS      bool
+	CORS bool
 }
 
 var serverOptions = serveOptions{
@@ -178,6 +179,81 @@ func (r *sessionAgentRunner) setState(state agent.State) {
 	r.state = state
 }
 
+// ListModels 暴露当前配置中所有可选模型，供 web 前端展示。
+func (r *sessionAgentRunner) ListModels() []web.ModelInfo {
+	models := make([]web.ModelInfo, 0, len(r.cfg.LLM))
+	for index, llmConfig := range r.cfg.LLM {
+		models = append(models, web.ModelInfo{
+			Index:    index,
+			Name:     llmConfig.Name,
+			Provider: llmConfig.Provider,
+			Model:    llmConfig.Model,
+			Display:  llmConfig.DisplayName(index),
+		})
+	}
+	return models
+}
+
+// CurrentModel 返回某 session 当前使用的模型。
+// 如果该 session 没有显式选择，回退到默认（cfg.LLM[0]），并把 explicit=false 告知调用方。
+//   - r.forceModel 为 true 时表示用户在启动时通过 --model 锁定了模型，
+//     此时永远返回 r.llmIndex 对应的模型，且 explicit=true（视为锁定）。
+func (r *sessionAgentRunner) CurrentModel(ctx context.Context, sessionID string) (web.ModelInfo, bool, error) {
+	if r.forceModel {
+		return r.modelInfoAt(r.llmIndex), true, nil
+	}
+
+	sessionID = normalizeSessionID(sessionID)
+	selection, ok, err := r.modelStore.Get(ctx, r.userID, r.cfg.Agent.ID, sessionID)
+	if err != nil {
+		return web.ModelInfo{}, false, err
+	}
+	if !ok {
+		return r.modelInfoAt(0), false, nil
+	}
+
+	index, ok := resolveStoredLLMIndex(r.cfg, selection)
+	if !ok {
+		return r.modelInfoAt(0), false, nil
+	}
+	return r.modelInfoAt(index), true, nil
+}
+
+// SelectModel 把 selector（序号 / name / model）解析为模型并持久化，
+// 后续该 session 的 RunSession 会自动读取这一选择。
+func (r *sessionAgentRunner) SelectModel(ctx context.Context, sessionID, selector string) (web.ModelInfo, error) {
+	if r.forceModel {
+		return web.ModelInfo{}, fmt.Errorf("当前以 --model 锁定模式启动，禁止运行时切换模型")
+	}
+	if strings.TrimSpace(selector) == "" {
+		return web.ModelInfo{}, fmt.Errorf("selector 不能为空")
+	}
+	index, _, err := r.cfg.FindLLM(selector)
+	if err != nil {
+		return web.ModelInfo{}, err
+	}
+
+	sessionID = normalizeSessionID(sessionID)
+	saveModelSelection(ctx, io.Discard, r.modelStore, r.userID, sessionID, r.cfg, index)
+	return r.modelInfoAt(index), nil
+}
+
+// modelInfoAt 把 cfg.LLM[index] 转换成对外暴露的 ModelInfo；
+// index 越界时回落到 0，避免 panic。
+func (r *sessionAgentRunner) modelInfoAt(index int) web.ModelInfo {
+	if index < 0 || index >= len(r.cfg.LLM) {
+		index = 0
+	}
+	llmConfig := r.cfg.LLM[index]
+	return web.ModelInfo{
+		Index:    index,
+		Name:     llmConfig.Name,
+		Provider: llmConfig.Provider,
+		Model:    llmConfig.Model,
+		Display:  llmConfig.DisplayName(index),
+	}
+}
+
 func runServerCommand(command *cobra.Command, _ []string) error {
 	return runServer(command.Context(), command.OutOrStdout(), command.ErrOrStderr(), options, serverOptions)
 }
@@ -255,6 +331,7 @@ func runServer(parent context.Context, out, errOut io.Writer, opts cliOptions, s
 	handler := web.NewHandler(
 		registry,
 		web.WithModelName(cfg.LLM[0].DisplayName(0)),
+		web.WithModelSelector(runner),
 	)
 	handler.RegisterAgent(runner)
 
@@ -273,11 +350,7 @@ func runServer(parent context.Context, out, errOut io.Writer, opts cliOptions, s
 	fmt.Fprintf(out, "🚀 服务监听: http://%s\n", displayAddr(addr))
 	fmt.Fprintf(out, "🤖 Agent: %s (模型: %s)\n", runner.ID(), cfg.LLM[currentLLMIndex].DisplayName(currentLLMIndex))
 	fmt.Fprintf(out, "🔧 已加载工具: %d 个\n", len(registry.List()))
-	if dir := strings.TrimSpace(serveOpts.StaticDir); dir != "" {
-		fmt.Fprintf(out, "🗂  静态资源: %s\n", dir)
-	} else {
-		fmt.Fprintln(out, "🗂  前端入口: 内嵌单文件页面 /")
-	}
+	fmt.Fprintln(out, "🗂  纯 API 服务（无内嵌前端）：使用 frontend/ 单独启动 UI，或访问 /api/* 与 /health")
 	fmt.Fprintln(out, "按 Ctrl+C 退出")
 
 	ctx, cancel := context.WithCancel(parent)
@@ -333,62 +406,25 @@ func newRouter(handler *web.Handler, opts serveOptions) *gin.Engine {
 	{
 		api.POST("/chat", handler.HandleChat)
 		api.POST("/chat/:agentId", handler.HandleChat)
+		api.POST("/chat/tool-permission", handler.HandleToolPermission)
 		api.GET("/agents", handler.HandleListAgents)
 		api.GET("/agents/:agentId", handler.HandleGetAgent)
 		api.GET("/agents/:agentId/state", handler.HandleGetAgent)
 		api.GET("/tools", handler.HandleListTools)
+		api.GET("/models", handler.HandleListModels)
+		api.GET("/models/current", handler.HandleGetCurrentModel)
+		api.POST("/models/select", handler.HandleSelectModel)
 	}
 
-	if dir := strings.TrimSpace(opts.StaticDir); dir != "" {
-		mountStatic(router, dir)
-	} else {
-		mountEmbeddedIndex(router, handler)
-	}
+	// 纯 API 服务：非 /api、非 /health 的请求一律 404，提示用户去前端项目。
+	router.NoRoute(func(c *gin.Context) {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "not found",
+			"hint":  "Gora 后端只提供 /api 与 /health；前端请通过 frontend/ 单独启动 (npm run dev)",
+		})
+	})
 
 	return router
-}
-
-func mountEmbeddedIndex(router *gin.Engine, handler *web.Handler) {
-	router.GET("/", handler.HandleIndex)
-	router.NoRoute(func(c *gin.Context) {
-		if c.Request.Method != http.MethodGet {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
-			return
-		}
-		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
-			return
-		}
-		handler.HandleIndex(c)
-	})
-}
-
-func mountStatic(router *gin.Engine, dir string) {
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		abs = dir
-	}
-
-	indexPath := filepath.Join(abs, "index.html")
-
-	router.NoRoute(func(c *gin.Context) {
-		// 仅对 GET 请求做 SPA 兜底，避免误把 API 404 吞掉。
-		if c.Request.Method != http.MethodGet {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
-			return
-		}
-		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
-			return
-		}
-
-		requested := filepath.Join(abs, cleanRelativePath(c.Request.URL.Path))
-		if info, err := os.Stat(requested); err == nil && !info.IsDir() {
-			c.File(requested)
-			return
-		}
-		c.File(indexPath)
-	})
 }
 
 func corsMiddleware() gin.HandlerFunc {
@@ -423,12 +459,6 @@ func displayAddr(addr string) string {
 	return addr
 }
 
-func cleanRelativePath(requestPath string) string {
-	cleaned := filepath.Clean("/" + requestPath)
-	return strings.TrimPrefix(cleaned, string(os.PathSeparator))
-}
-
 func init() {
-	rootCmd.Flags().StringVar(&serverOptions.StaticDir, "static", "", "覆盖内嵌前端，改为挂载指定静态资源目录")
-	rootCmd.Flags().BoolVar(&serverOptions.CORS, "cors", serverOptions.CORS, "是否开启简单 CORS")
+	rootCmd.Flags().BoolVar(&serverOptions.CORS, "cors", serverOptions.CORS, "是否开启简单 CORS（前端跨域访问后端时必需）")
 }

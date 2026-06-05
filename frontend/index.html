@@ -17,6 +17,34 @@
             <div class="logo-subtitle">Goroutine + Agent</div>
           </div>
         </div>
+        <div class="header-controls">
+          <label class="header-field">
+            <span class="header-field-label">Agent</span>
+            <select id="agentSelect" class="header-select">
+              <option value="">默认</option>
+            </select>
+          </label>
+          <label class="header-field">
+            <span class="header-field-label">Model</span>
+            <select id="modelSelect" class="header-select" disabled>
+              <option value="">加载中…</option>
+            </select>
+          </label>
+          <label class="header-field">
+            <span class="header-field-label">Session</span>
+            <input
+              id="sessionInput"
+              class="header-input"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="session-id"
+            />
+          </label>
+          <button id="btnNewSession" class="header-btn" type="button" title="开启新会话并清空对话">
+            ＋ 新会话
+          </button>
+        </div>
         <div class="header-right">
           <span class="connection"><span class="status-dot"></span><span id="connectionLabel">连接中</span></span>
           <span id="agentState" class="agent-state state-idle">空闲</span>
@@ -55,10 +83,15 @@
             </div>
           </section>
 
-          <section>
-            <h3>🔧 可用工具</h3>
-            <div id="toolList" class="tool-list">
-              <div class="tool-item placeholder">加载中…</div>
+          <section class="collapsible-section" data-section="tools">
+            <button type="button" class="collapsible-header" aria-expanded="true">
+              <span class="collapsible-title">🔧 可用工具</span>
+              <span class="collapsible-chevron" aria-hidden="true">▾</span>
+            </button>
+            <div class="collapsible-content">
+              <div id="toolList" class="tool-list">
+                <div class="tool-item placeholder">加载中…</div>
+              </div>
             </div>
           </section>
 

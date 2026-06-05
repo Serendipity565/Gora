@@ -6,6 +6,7 @@ export type AgentEventType =
   | "thinking"
   | "tool_call"
   | "tool_result"
+  | "tool_permission_request"
   | "chunk"
   | "done"
   | "error"
@@ -32,8 +33,19 @@ export interface ToolInfo {
   parameters?: Record<string, unknown>;
 }
 
+export interface ModelInfo {
+  index: number;
+  name?: string;
+  provider?: string;
+  model: string;
+  /** 适合在下拉里展示的人类可读名称。 */
+  display: string;
+}
+
 export interface ChatRequest {
   message: string;
   agent_id?: string;
   session_id?: string;
+  /** 用户在前端 UI 中关闭的工具名列表，后端会拒绝模型调用其中任一工具。 */
+  disabled_tools?: string[];
 }
