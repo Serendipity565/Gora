@@ -30,16 +30,10 @@ var options = cliOptions{
 
 var rootCmd = &cobra.Command{
 	Use:           "gora",
-	Short:         "Gora Agent Web 服务（默认启动 Gin Web 服务，使用 `gora chat` 进入命令行对话）",
+	Short:         "Gora Agent Web 服务（启动 Gin Web 服务）",
 	SilenceErrors: true,
 	SilenceUsage:  true,
 	RunE:          runServerCommand,
-}
-
-var chatCmd = &cobra.Command{
-	Use:   "chat",
-	Short: "启动交互式 Agent 命令行对话",
-	RunE:  runChatCommand,
 }
 
 func init() {
@@ -57,8 +51,6 @@ func init() {
 	rootCmd.PersistentFlags().IntVar(&options.MaxHistoryMessages, "max-history", 0, "覆盖配置中的历史消息保留数量")
 	rootCmd.PersistentFlags().IntVar(&options.MaxStreamChunkRunes, "max-chunk-runes", 0, "覆盖配置中的单个流式输出事件字符数")
 	rootCmd.Flags().StringVar(&options.ServerAddr, "addr", ":8080", "Gin Web 服务监听地址")
-
-	rootCmd.AddCommand(chatCmd)
 }
 
 func Execute() error {

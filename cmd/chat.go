@@ -1,180 +1,26 @@
 package cmd
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/cloudwego/eino/schema"
-	"github.com/spf13/cobra"
 
 	"github.com/Serendipity565/gora/agent"
 	appconfig "github.com/Serendipity565/gora/config"
 	"github.com/Serendipity565/gora/llm"
 	"github.com/Serendipity565/gora/storage"
 	"github.com/Serendipity565/gora/tool"
-	"github.com/Serendipity565/gora/tool/builtin"
 )
 
 type historyCarrier interface {
 	RestoreHistories(map[string][]*schema.Message)
 	SnapshotHistories() map[string][]*schema.Message
-}
-
-func runChatCommand(command *cobra.Command, args []string) error {
-	return runChat(command.Context(), command.InOrStdin(), command.OutOrStdout(), command.ErrOrStderr(), options)
-}
-
-func runChat(parent context.Context, in io.Reader, out, errOut io.Writer, opts cliOptions) error {
-	if parent == nil {
-		parent = context.Background()
-	}
-
-	fmt.Fprintln(out, "╔══════════════════════════════════╗")
-	fmt.Fprintln(out, "║        Gora Agent CLI           ║")
-	fmt.Fprintln(out, "║   Goroutine + Agent = Gora      ║")
-	fmt.Fprintln(out, "╚══════════════════════════════════╝")
-	fmt.Fprintln(out)
-
-	cfg, err := appconfig.Read(opts.ConfigPath)
-	if err != nil {
-		panic(fmt.Errorf("加载配置失败: %w", err))
-	}
-	applyRuntimeOverrides(&cfg, opts)
-	if err := cfg.Validate(); err != nil {
-		panic(fmt.Errorf("配置校验失败: %w", err))
-	}
-
-	scanner := bufio.NewScanner(in)
-
-	registry := tool.NewRegistry()
-	if err := registry.Register(builtin.NewHTTPTool()); err != nil {
-		return fmt.Errorf("注册工具失败: %w", err)
-	}
-	fmt.Fprintf(out, "✅ 已加载 %d 个工具\n", len(registry.List()))
-
-	userID := modelSelectionUserID(opts)
-	modelStore, err := storage.OpenModelSelectionStore(parent, cfg.Database.DSN())
-	if err != nil {
-		fmt.Fprintf(errOut, "模型选择存储不可用，本次会话内仍可切换模型: %v\n", err)
-		modelStore = storage.NoopModelSelectionStore{}
-	}
-	defer func() {
-		if err := modelStore.Close(); err != nil {
-			fmt.Fprintf(errOut, "关闭模型选择存储失败: %v\n", err)
-		}
-	}()
-
-	redisConfig := cfg.RedisSettings()
-	memoryTTL, err := shortTermMemoryTTL(redisConfig.ShortTermTTL)
-	if err != nil {
-		fmt.Fprintf(errOut, "短期记忆 TTL 配置无效，将使用 24h: %v\n", err)
-		memoryTTL = 24 * time.Hour
-	}
-	memoryStore, err := storage.OpenActiveMemoryStore(parent, redisConfig.Addr, redisConfig.Password, redisConfig.DB, memoryTTL)
-	if err != nil {
-		fmt.Fprintf(errOut, "短期记忆 Redis 不可用，将仅使用数据库历史: %v\n", err)
-		memoryStore = storage.NoopActiveMemoryStore{}
-	}
-	defer func() {
-		if err := memoryStore.Close(); err != nil {
-			fmt.Fprintf(errOut, "关闭短期记忆存储失败: %v\n", err)
-		}
-	}()
-
-	currentLLMIndex := 0
-	if strings.TrimSpace(opts.Model) == "" {
-		currentLLMIndex = restoreModelSelection(parent, out, errOut, modelStore, userID, agent.DefaultSessionID, cfg)
-	}
-	myAgent, err := buildChatAgent(parent, cfg, registry, currentLLMIndex, nil)
-	if err != nil {
-		return fmt.Errorf("创建 Eino Agent 失败: %w", err)
-	}
-	restoreConversationContext(parent, out, errOut, modelStore, memoryStore, userID, agent.DefaultSessionID, cfg, myAgent)
-
-	fmt.Fprintf(out, "🤖 %s 已就绪 (模型: %s, 配置: %s)\n", myAgent.ID(), cfg.LLM[currentLLMIndex].DisplayName(currentLLMIndex), opts.ConfigPath)
-	fmt.Fprintln(out, "输入消息与 Agent 对话，输入 /model 查看或切换模型，输入 /quit 退出")
-	fmt.Fprintln(out, strings.Repeat("─", 50))
-
-	ctx, cancel := context.WithCancel(parent)
-	defer cancel()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(sigCh)
-	go func() {
-		select {
-		case <-sigCh:
-			fmt.Fprintln(out, "\n👋 正在退出...")
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
-
-	for {
-		fmt.Fprint(out, "\n💬 你: ")
-		if !scanner.Scan() {
-			break
-		}
-
-		input := strings.TrimSpace(scanner.Text())
-		if input == "" {
-			continue
-		}
-		if input == "/quit" {
-			fmt.Fprintln(out, "👋 再见！")
-			break
-		}
-		if strings.HasPrefix(input, "/model") {
-			nextIndex, nextAgent, handled, err := handleModelCommand(parent, out, cfg, registry, myAgent, currentLLMIndex, input)
-			if err != nil {
-				fmt.Fprintf(errOut, "模型切换失败: %v\n", err)
-				continue
-			}
-			if handled {
-				currentLLMIndex = nextIndex
-				myAgent = nextAgent
-				saveModelSelection(parent, errOut, modelStore, userID, agent.DefaultSessionID, cfg, currentLLMIndex)
-			}
-			continue
-		}
-
-		fmt.Fprintf(out, "\n🤖 %s:\n", myAgent.ID())
-
-		events := myAgent.Run(ctx, input)
-		var assistantReply strings.Builder
-		var gotDone, gotError bool
-		for event := range events {
-			renderEvent(out, event)
-			switch event.Type {
-			case agent.EventChunk:
-				assistantReply.WriteString(event.Content)
-			case agent.EventDone:
-				gotDone = true
-			case agent.EventError:
-				gotError = true
-			}
-		}
-		if gotDone && !gotError {
-			persistConversationTurn(parent, errOut, modelStore, memoryStore, userID, agent.DefaultSessionID, cfg, currentLLMIndex, input, assistantReply.String(), myAgent)
-		}
-
-		fmt.Fprintln(out)
-	}
-
-	if err := scanner.Err(); err != nil {
-		fmt.Fprintf(errOut, "读取输入失败: %v\n", err)
-	}
-
-	return nil
 }
 
 func buildChatAgent(
@@ -206,51 +52,6 @@ func buildChatAgent(
 	}
 
 	return chatAgent, nil
-}
-
-func handleModelCommand(
-	ctx context.Context,
-	out io.Writer,
-	cfg appconfig.Config,
-	registry *tool.Registry,
-	currentAgent *agent.EinoAgent,
-	currentLLMIndex int,
-	input string,
-) (int, *agent.EinoAgent, bool, error) {
-	selector := strings.TrimSpace(strings.TrimPrefix(input, "/model"))
-	if selector == "" || strings.EqualFold(selector, "list") {
-		renderModelList(out, cfg, currentLLMIndex)
-		return currentLLMIndex, currentAgent, false, nil
-	}
-
-	nextIndex, target, err := cfg.FindLLM(selector)
-	if err != nil {
-		return currentLLMIndex, currentAgent, false, err
-	}
-	if nextIndex == currentLLMIndex {
-		fmt.Fprintf(out, "当前已使用模型: %s\n", target.DisplayName(nextIndex))
-		return currentLLMIndex, currentAgent, false, nil
-	}
-
-	nextAgent, err := buildChatAgent(ctx, cfg, registry, nextIndex, currentAgent)
-	if err != nil {
-		return currentLLMIndex, currentAgent, false, err
-	}
-
-	fmt.Fprintf(out, "已切换到模型: %s\n", target.DisplayName(nextIndex))
-	return nextIndex, nextAgent, true, nil
-}
-
-func renderModelList(out io.Writer, cfg appconfig.Config, currentLLMIndex int) {
-	fmt.Fprintln(out, "可用模型:")
-	for index, llmConfig := range cfg.LLM {
-		marker := " "
-		if index == currentLLMIndex {
-			marker = "*"
-		}
-		fmt.Fprintf(out, "  %s %d. %s\n", marker, index+1, llmConfig.DisplayName(index))
-	}
-	fmt.Fprintln(out, "使用 /model <序号|name|model> 切换")
 }
 
 func restoreModelSelection(
@@ -598,40 +399,4 @@ func modelSelectionUserID(opts cliOptions) string {
 		return userID
 	}
 	return storage.LocalUserID
-}
-
-func renderEvent(out io.Writer, event agent.Event) {
-	switch event.Type {
-	case agent.EventThinking:
-		fmt.Fprintf(out, "  🧠 %s\n", event.Content)
-	case agent.EventToolCall:
-		fmt.Fprintf(out, "  🔧 调用工具: %s\n", event.Content)
-		if args, ok := event.Metadata["args"]; ok {
-			fmt.Fprintf(out, "     参数: %s\n", jsonMarshal(args))
-		}
-	case agent.EventToolResult:
-		fmt.Fprintf(out, "  📥 工具返回: %s\n", truncateRunes(event.Content, 200))
-	case agent.EventChunk:
-		fmt.Fprint(out, event.Content)
-	case agent.EventDone:
-		fmt.Fprintln(out)
-	case agent.EventError:
-		fmt.Fprintf(out, "\n  ❌ 错误: %s\n", event.Content)
-	}
-}
-
-func jsonMarshal(v any) string {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return fmt.Sprintf("%v", v)
-	}
-	return string(b)
-}
-
-func truncateRunes(s string, max int) string {
-	runes := []rune(s)
-	if len(runes) <= max {
-		return s
-	}
-	return string(runes[:max]) + "..."
 }

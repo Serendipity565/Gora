@@ -344,9 +344,6 @@ func runServer(parent context.Context, out, errOut io.Writer, opts cliOptions, s
 		ReadHeaderTimeout: 15 * time.Second,
 	}
 
-	fmt.Fprintln(out, "╔══════════════════════════════════════╗")
-	fmt.Fprintln(out, "║        Gora Agent Server            ║")
-	fmt.Fprintln(out, "╚══════════════════════════════════════╝")
 	fmt.Fprintf(out, "🚀 服务监听: http://%s\n", displayAddr(addr))
 	fmt.Fprintf(out, "🤖 Agent: %s (模型: %s)\n", runner.ID(), cfg.LLM[currentLLMIndex].DisplayName(currentLLMIndex))
 	fmt.Fprintf(out, "🔧 已加载工具: %d 个\n", len(registry.List()))
@@ -389,10 +386,8 @@ func runServer(parent context.Context, out, errOut io.Writer, opts cliOptions, s
 }
 
 func newRouter(handler *web.Handler, opts serveOptions) *gin.Engine {
-	gin.SetMode(gin.ReleaseMode)
-
 	router := gin.New()
-	router.Use(gin.Recovery())
+	router.Use(gin.Logger(), gin.Recovery())
 
 	if opts.CORS {
 		router.Use(corsMiddleware())
