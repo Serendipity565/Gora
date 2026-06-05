@@ -63,7 +63,7 @@ func TestModelSelectionUserID(t *testing.T) {
 func TestChatMessagesToHistories(t *testing.T) {
 	t.Parallel()
 
-	histories := chatMessagesToHistories([]storage.ChatMessage{
+	histories := chatMessagesToHistories("default", []storage.ChatMessage{
 		{Role: "user", Content: "hello"},
 		{Role: "assistant", Content: "hi"},
 		{Role: "tool", Content: "ignored"},
@@ -77,6 +77,22 @@ func TestChatMessagesToHistories(t *testing.T) {
 	}
 	if history[1].Role != schema.Assistant || history[1].Content != "hi" {
 		t.Fatalf("unexpected second message: %#v", history[1])
+	}
+}
+
+func TestChatMessagesToHistoriesUsesProvidedSessionID(t *testing.T) {
+	t.Parallel()
+
+	histories := chatMessagesToHistories("session-2", []storage.ChatMessage{{
+		Role:    "user",
+		Content: "hello",
+	}})
+
+	if _, ok := histories["default"]; ok {
+		t.Fatal("expected default session to be absent")
+	}
+	if got := len(histories["session-2"]); got != 1 {
+		t.Fatalf("expected 1 message for session-2, got %d", got)
 	}
 }
 
@@ -122,6 +138,17 @@ func TestShortTermMemoryTTL(t *testing.T) {
 	}
 	if _, err := shortTermMemoryTTL("soon"); err == nil {
 		t.Fatal("expected invalid ttl to fail")
+	}
+}
+
+func TestNormalizeSessionID(t *testing.T) {
+	t.Parallel()
+
+	if got := normalizeSessionID("  "); got != "default" {
+		t.Fatalf("expected default session id, got %q", got)
+	}
+	if got := normalizeSessionID(" session-a "); got != "session-a" {
+		t.Fatalf("expected trimmed session id, got %q", got)
 	}
 }
 

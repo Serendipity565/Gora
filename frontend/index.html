@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gora Agent Playground</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ctext y='52' font-size='52'%3E%F0%9F%A6%8D%3C/text%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="header">
+        <div class="logo">
+          <div class="logo-icon">🦍</div>
+          <div>
+            <div class="logo-title">Gora</div>
+            <div class="logo-subtitle">Goroutine + Agent</div>
+          </div>
+        </div>
+        <div class="header-right">
+          <span class="connection"><span class="status-dot"></span><span id="connectionLabel">连接中</span></span>
+          <span id="agentState" class="agent-state state-idle">空闲</span>
+          <span id="modelName" class="model-name">model: --</span>
+        </div>
+      </header>
+
+      <main class="main">
+        <section class="chat-panel">
+          <div id="messages" class="messages" aria-live="polite"></div>
+          <form id="composer" class="input-area" autocomplete="off">
+            <textarea
+              id="userInput"
+              class="user-input"
+              rows="1"
+              placeholder="输入消息，Enter 发送 / Shift+Enter 换行"
+            ></textarea>
+            <button id="btnSend" class="btn-send" type="submit" aria-label="发送">➤</button>
+          </form>
+        </section>
+
+        <aside class="side-panel">
+          <section>
+            <h3>📊 本轮统计</h3>
+            <div class="metric-card">
+              <div class="metric-label">事件数</div>
+              <div id="eventCount" class="metric-value accent">0</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">工具调用</div>
+              <div id="toolCallCount" class="metric-value tool">0</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">流式片段</div>
+              <div id="chunkCount" class="metric-value success">0</div>
+            </div>
+          </section>
+
+          <section>
+            <h3>🔧 可用工具</h3>
+            <div id="toolList" class="tool-list">
+              <div class="tool-item placeholder">加载中…</div>
+            </div>
+          </section>
+
+          <section>
+            <h3>💡 试试这些</h3>
+            <div class="tool-list">
+              <button type="button" class="tool-item example" data-prompt="帮我查一下 https://api.github.com 的状态">
+                🔍 查 GitHub API 状态
+              </button>
+              <button type="button" class="tool-item example" data-prompt="用 GET 请求 https://httpbin.org/json 并告诉我返回了什么">
+                📡 请求 httpbin.org
+              </button>
+              <button type="button" class="tool-item example" data-prompt="你好，介绍一下你自己">
+                👋 简单聊天
+              </button>
+            </div>
+          </section>
+        </aside>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

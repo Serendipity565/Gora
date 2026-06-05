@@ -73,16 +73,19 @@ llm:
 	}
 }
 
-func TestLoadSupportsMockProviderWithoutCredentials(t *testing.T) {
+func TestLoadRejectsMockProvider(t *testing.T) {
 	t.Parallel()
 
 	path := writeConfig(t, withAgentConfig(`
 llm:
   - name: echo
     provider: mock
+    api_key: sk-test
+    base_url: https://example.com/v1
     model: echo
 `))
 
+	defer expectPanic(t)
 	_ = Load(path)
 }
 
@@ -100,7 +103,7 @@ llm:
 	_ = Load(path)
 }
 
-func TestLoadRequiresBaseURLForNonMock(t *testing.T) {
+func TestLoadRequiresBaseURL(t *testing.T) {
 	t.Parallel()
 
 	path := writeConfig(t, withAgentConfig(`
@@ -119,8 +122,10 @@ func TestReadTrimsDatabaseURL(t *testing.T) {
 
 	path := writeConfig(t, withAgentConfig(`
 llm:
-  - provider: mock
-    model: echo
+  - provider: deepseek
+    api_key: sk-test
+    base_url: https://api.deepseek.com
+    model: deepseek-chat
 database:
   url: "  gora:gora_dev_password@tcp(localhost:3306)/gora?charset=utf8mb4&parseTime=True&loc=Local  "
 `))
@@ -140,8 +145,10 @@ func TestReadBuildsDatabaseDSNFromMySQLConfig(t *testing.T) {
 
 	path := writeConfig(t, withAgentConfig(`
 llm:
-  - provider: mock
-    model: echo
+  - provider: deepseek
+    api_key: sk-test
+    base_url: https://api.deepseek.com
+    model: deepseek-chat
 database:
   mysql:
     addr: "  localhost:3306  "
@@ -165,8 +172,10 @@ func TestReadRedisConfig(t *testing.T) {
 
 	path := writeConfig(t, withAgentConfig(`
 llm:
-  - provider: mock
-    model: echo
+  - provider: deepseek
+    api_key: sk-test
+    base_url: https://api.deepseek.com
+    model: deepseek-chat
 database:
   redis:
     addr: "  localhost:6379  "
@@ -199,8 +208,10 @@ func TestReadLegacyRedisConfig(t *testing.T) {
 
 	path := writeConfig(t, withAgentConfig(`
 llm:
-  - provider: mock
-    model: echo
+  - provider: deepseek
+    api_key: sk-test
+    base_url: https://api.deepseek.com
+    model: deepseek-chat
 redis:
   addr: localhost:6379
   password: legacy
@@ -229,8 +240,10 @@ func TestReadLeavesRedisTTLUnsetWhenOmitted(t *testing.T) {
 
 	path := writeConfig(t, withAgentConfig(`
 llm:
-  - provider: mock
-    model: echo
+  - provider: deepseek
+    api_key: sk-test
+    base_url: https://api.deepseek.com
+    model: deepseek-chat
 redis:
   addr: localhost:6379
 `))
@@ -302,7 +315,7 @@ func TestLoadPanicsOnInvalidConfig(t *testing.T) {
 
 func validConfig() Config {
 	return Config{
-		LLM: []LLMConfig{{Provider: "mock", Model: "echo"}},
+		LLM: []LLMConfig{{Provider: "deepseek", Model: "deepseek-chat", APIKey: "sk-test", BaseURL: "https://api.deepseek.com"}},
 		Agent: AgentConfig{
 			ID:                  "agent-1",
 			Name:                "gora-eino-agent",

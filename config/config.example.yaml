@@ -1,7 +1,4 @@
 llm:
-  - name: "mock"
-    provider: mock
-    model: "echo"
   - name: "chat"
     provider: deepseek
     api_key: "sk-your-api-key"

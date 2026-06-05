@@ -12,6 +12,7 @@ type cliOptions struct {
 	APIKey              string
 	BaseURL             string
 	Model               string
+	ServerAddr          string
 	AgentID             string
 	UserID              string
 	DatabaseURL         string
@@ -29,15 +30,15 @@ var options = cliOptions{
 
 var rootCmd = &cobra.Command{
 	Use:           "gora",
-	Short:         "Gora Agent CLI",
+	Short:         "Gora Agent Web 服务（默认启动 Gin Web 服务，使用 `gora chat` 进入命令行对话）",
 	SilenceErrors: true,
 	SilenceUsage:  true,
-	RunE:          runChatCommand,
+	RunE:          runServerCommand,
 }
 
 var chatCmd = &cobra.Command{
 	Use:   "chat",
-	Short: "启动交互式 Agent 对话",
+	Short: "启动交互式 Agent 命令行对话",
 	RunE:  runChatCommand,
 }
 
@@ -55,6 +56,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&options.ShortTermMemoryTTL, "short-term-memory-ttl", "", "覆盖 Redis 短期记忆过期时间，例如 24h，默认也会读取 GORA_SHORT_TERM_MEMORY_TTL")
 	rootCmd.PersistentFlags().IntVar(&options.MaxHistoryMessages, "max-history", 0, "覆盖配置中的历史消息保留数量")
 	rootCmd.PersistentFlags().IntVar(&options.MaxStreamChunkRunes, "max-chunk-runes", 0, "覆盖配置中的单个流式输出事件字符数")
+	rootCmd.Flags().StringVar(&options.ServerAddr, "addr", ":8080", "Gin Web 服务监听地址")
 
 	rootCmd.AddCommand(chatCmd)
 }

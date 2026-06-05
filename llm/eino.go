@@ -8,7 +8,6 @@ import (
 
 	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
 	einomodel "github.com/cloudwego/eino/components/model"
-	"github.com/cloudwego/eino/schema"
 )
 
 // ChatModelConfig 是 Gora 使用的统一模型配置。
@@ -38,11 +37,8 @@ func DefaultDeepSeekConfig(apiKey string) OpenAICompatibleConfig {
 	}
 }
 
-// NewEinoModel 根据 provider 创建对应的 Eino 模型。
+// NewEinoModel 根据配置创建 OpenAI 兼容的 Eino 模型。
 func NewEinoModel(ctx context.Context, config ChatModelConfig) (einomodel.ToolCallingChatModel, error) {
-	if strings.EqualFold(strings.TrimSpace(config.Provider), "mock") {
-		return &mockChatModel{model: strings.TrimSpace(config.Model)}, nil
-	}
 	return NewOpenAICompatibleEinoModel(ctx, OpenAICompatibleConfig{
 		APIKey:  config.APIKey,
 		BaseURL: config.BaseURL,
@@ -69,43 +65,4 @@ func NewDeepSeekEinoModel(ctx context.Context, config DeepSeekConfig) (*einoopen
 		config.Model = "deepseek-chat"
 	}
 	return NewOpenAICompatibleEinoModel(ctx, OpenAICompatibleConfig(config))
-}
-
-type mockChatModel struct {
-	model string
-	tools []*schema.ToolInfo
-}
-
-func (m *mockChatModel) Generate(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.Message, error) {
-	return schema.AssistantMessage(lastUserContent(input), nil), nil
-}
-
-func (m *mockChatModel) Stream(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
-	message, err := m.Generate(ctx, input, opts...)
-	if err != nil {
-		return nil, err
-	}
-	return schema.StreamReaderFromArray([]*schema.Message{message}), nil
-}
-
-func (m *mockChatModel) WithTools(tools []*schema.ToolInfo) (einomodel.ToolCallingChatModel, error) {
-	clone := *m
-	clone.tools = append([]*schema.ToolInfo(nil), tools...)
-	return &clone, nil
-}
-
-func lastUserContent(messages []*schema.Message) string {
-	for i := len(messages) - 1; i >= 0; i-- {
-		message := messages[i]
-		if message == nil {
-			continue
-		}
-		if message.Role != schema.User {
-			continue
-		}
-		if content := strings.TrimSpace(message.Content); content != "" {
-			return content
-		}
-	}
-	return ""
 }

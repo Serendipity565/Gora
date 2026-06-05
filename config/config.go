@@ -303,7 +303,11 @@ func validateLLMConfig(sl validator.StructLevel) {
 	}
 
 	provider := normalizeProvider(config.Provider)
-	if provider == "" || provider == "mock" {
+	if provider == "" {
+		return
+	}
+	if provider == "mock" {
+		sl.ReportError(config.Provider, "provider", "Provider", "unsupported_provider", "mock")
 		return
 	}
 
@@ -373,6 +377,8 @@ func describeValidationError(err validator.FieldError) string {
 		return fmt.Sprintf("%s 至少需要 %s 项", field, err.Param())
 	case "duration":
 		return fmt.Sprintf("%s 不是有效的 time.Duration", field)
+	case "unsupported_provider":
+		return fmt.Sprintf("%s 不支持: %s", field, err.Param())
 	default:
 		return fmt.Sprintf("%s 校验失败: %s", field, err.Tag())
 	}

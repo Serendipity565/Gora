@@ -24,6 +24,11 @@ import (
 	"github.com/Serendipity565/gora/tool/builtin"
 )
 
+type historyCarrier interface {
+	RestoreHistories(map[string][]*schema.Message)
+	SnapshotHistories() map[string][]*schema.Message
+}
+
 func runChatCommand(command *cobra.Command, args []string) error {
 	return runChat(command.Context(), command.InOrStdin(), command.OutOrStdout(), command.ErrOrStderr(), options)
 }
@@ -87,13 +92,13 @@ func runChat(parent context.Context, in io.Reader, out, errOut io.Writer, opts c
 
 	currentLLMIndex := 0
 	if strings.TrimSpace(opts.Model) == "" {
-		currentLLMIndex = restoreModelSelection(parent, out, errOut, modelStore, userID, cfg)
+		currentLLMIndex = restoreModelSelection(parent, out, errOut, modelStore, userID, agent.DefaultSessionID, cfg)
 	}
 	myAgent, err := buildChatAgent(parent, cfg, registry, currentLLMIndex, nil)
 	if err != nil {
 		return fmt.Errorf("创建 Eino Agent 失败: %w", err)
 	}
-	restoreConversationContext(parent, out, errOut, modelStore, memoryStore, userID, cfg, myAgent)
+	restoreConversationContext(parent, out, errOut, modelStore, memoryStore, userID, agent.DefaultSessionID, cfg, myAgent)
 
 	fmt.Fprintf(out, "🤖 %s 已就绪 (模型: %s, 配置: %s)\n", myAgent.ID(), cfg.LLM[currentLLMIndex].DisplayName(currentLLMIndex), opts.ConfigPath)
 	fmt.Fprintln(out, "输入消息与 Agent 对话，输入 /model 查看或切换模型，输入 /quit 退出")
@@ -137,7 +142,7 @@ func runChat(parent context.Context, in io.Reader, out, errOut io.Writer, opts c
 			if handled {
 				currentLLMIndex = nextIndex
 				myAgent = nextAgent
-				saveModelSelection(parent, errOut, modelStore, userID, cfg, currentLLMIndex)
+				saveModelSelection(parent, errOut, modelStore, userID, agent.DefaultSessionID, cfg, currentLLMIndex)
 			}
 			continue
 		}
@@ -159,7 +164,7 @@ func runChat(parent context.Context, in io.Reader, out, errOut io.Writer, opts c
 			}
 		}
 		if gotDone && !gotError {
-			persistConversationTurn(parent, errOut, modelStore, memoryStore, userID, cfg, currentLLMIndex, input, assistantReply.String(), myAgent)
+			persistConversationTurn(parent, errOut, modelStore, memoryStore, userID, agent.DefaultSessionID, cfg, currentLLMIndex, input, assistantReply.String(), myAgent)
 		}
 
 		fmt.Fprintln(out)
@@ -253,9 +258,10 @@ func restoreModelSelection(
 	out, errOut io.Writer,
 	store storage.ModelSelectionStore,
 	userID string,
+	sessionID string,
 	cfg appconfig.Config,
 ) int {
-	selection, ok, err := store.Get(ctx, userID, cfg.Agent.ID, agent.DefaultSessionID)
+	selection, ok, err := store.Get(ctx, userID, cfg.Agent.ID, normalizeSessionID(sessionID))
 	if err != nil {
 		fmt.Fprintf(errOut, "读取模型选择失败，将使用默认模型: %v\n", err)
 		return 0
@@ -279,6 +285,7 @@ func saveModelSelection(
 	errOut io.Writer,
 	store storage.ModelSelectionStore,
 	userID string,
+	sessionID string,
 	cfg appconfig.Config,
 	llmIndex int,
 ) {
@@ -291,7 +298,7 @@ func saveModelSelection(
 	err := store.Save(ctx, storage.ModelSelection{
 		UserID:    userID,
 		AgentID:   cfg.Agent.ID,
-		SessionID: agent.DefaultSessionID,
+		SessionID: normalizeSessionID(sessionID),
 		LLMName:   llmConfig.Name,
 		Model:     llmConfig.Model,
 		LLMIndex:  llmIndex,
@@ -327,20 +334,37 @@ func restoreConversationContext(
 	historyStore storage.ChatHistoryStore,
 	memoryStore storage.ActiveMemoryStore,
 	userID string,
+	sessionID string,
 	cfg appconfig.Config,
-	chatAgent *agent.EinoAgent,
+	chatAgent historyCarrier,
 ) {
-	messages, ok, err := memoryStore.Get(ctx, userID, cfg.Agent.ID, agent.DefaultSessionID)
+	sessionID = normalizeSessionID(sessionID)
+	applyRestoredMessages := func(messages []storage.ChatMessage) {
+		restored := chatMessagesToHistories(sessionID, messages)
+		if len(restored) == 0 {
+			return
+		}
+		histories := chatAgent.SnapshotHistories()
+		if histories == nil {
+			histories = make(map[string][]*schema.Message, len(restored))
+		}
+		for restoredSessionID, history := range restored {
+			histories[restoredSessionID] = history
+		}
+		chatAgent.RestoreHistories(histories)
+	}
+
+	messages, ok, err := memoryStore.Get(ctx, userID, cfg.Agent.ID, sessionID)
 	if err != nil {
 		fmt.Fprintf(errOut, "读取短期记忆失败，将尝试读取数据库历史: %v\n", err)
 	}
 	if ok && len(messages) > 0 {
-		chatAgent.RestoreHistories(chatMessagesToHistories(messages))
+		applyRestoredMessages(messages)
 		fmt.Fprintf(out, "已恢复短期记忆: %d 条消息\n", len(messages))
 		return
 	}
 
-	messages, err = historyStore.ListRecentMessages(ctx, userID, cfg.Agent.ID, agent.DefaultSessionID, cfg.Agent.MaxHistoryMessages)
+	messages, err = historyStore.ListRecentMessages(ctx, userID, cfg.Agent.ID, sessionID, cfg.Agent.MaxHistoryMessages)
 	if err != nil {
 		fmt.Fprintf(errOut, "读取历史对话失败，将从空上下文开始: %v\n", err)
 		return
@@ -349,9 +373,9 @@ func restoreConversationContext(
 		return
 	}
 
-	chatAgent.RestoreHistories(chatMessagesToHistories(messages))
+	applyRestoredMessages(messages)
 	fmt.Fprintf(out, "已从历史记录恢复上下文: %d 条消息\n", len(messages))
-	if err := memoryStore.Save(ctx, userID, cfg.Agent.ID, agent.DefaultSessionID, messages); err != nil {
+	if err := memoryStore.Save(ctx, userID, cfg.Agent.ID, sessionID, messages); err != nil {
 		fmt.Fprintf(errOut, "回填短期记忆失败: %v\n", err)
 	}
 }
@@ -362,11 +386,13 @@ func persistConversationTurn(
 	historyStore storage.ChatHistoryStore,
 	memoryStore storage.ActiveMemoryStore,
 	userID string,
+	sessionID string,
 	cfg appconfig.Config,
 	llmIndex int,
 	input, reply string,
-	chatAgent *agent.EinoAgent,
+	chatAgent historyCarrier,
 ) {
+	sessionID = normalizeSessionID(sessionID)
 	if llmIndex < 0 || llmIndex >= len(cfg.LLM) {
 		fmt.Fprintf(errOut, "保存历史对话失败: 模型序号超出范围: %d\n", llmIndex+1)
 		return
@@ -376,7 +402,7 @@ func persistConversationTurn(
 	messages := []storage.ChatMessage{{
 		UserID:    userID,
 		AgentID:   cfg.Agent.ID,
-		SessionID: agent.DefaultSessionID,
+		SessionID: sessionID,
 		Role:      string(schema.User),
 		Content:   input,
 		LLMName:   llmConfig.Name,
@@ -386,7 +412,7 @@ func persistConversationTurn(
 		messages = append(messages, storage.ChatMessage{
 			UserID:    userID,
 			AgentID:   cfg.Agent.ID,
-			SessionID: agent.DefaultSessionID,
+			SessionID: sessionID,
 			Role:      string(schema.Assistant),
 			Content:   reply,
 			LLMName:   llmConfig.Name,
@@ -398,14 +424,15 @@ func persistConversationTurn(
 	}
 
 	snapshot := chatAgent.SnapshotHistories()
-	activeMessages := schemaMessagesToChatMessages(userID, cfg.Agent.ID, agent.DefaultSessionID, llmConfig, snapshot[agent.DefaultSessionID])
+	activeMessages := schemaMessagesToChatMessages(userID, cfg.Agent.ID, sessionID, llmConfig, snapshot[sessionID])
 	activeMessages = trimChatMessages(activeMessages, cfg.Agent.MaxHistoryMessages)
-	if err := memoryStore.Save(ctx, userID, cfg.Agent.ID, agent.DefaultSessionID, activeMessages); err != nil {
+	if err := memoryStore.Save(ctx, userID, cfg.Agent.ID, sessionID, activeMessages); err != nil {
 		fmt.Fprintf(errOut, "保存短期记忆失败: %v\n", err)
 	}
 }
 
-func chatMessagesToHistories(messages []storage.ChatMessage) map[string][]*schema.Message {
+func chatMessagesToHistories(sessionID string, messages []storage.ChatMessage) map[string][]*schema.Message {
+	sessionID = normalizeSessionID(sessionID)
 	history := make([]*schema.Message, 0, len(messages))
 	for _, message := range messages {
 		content := strings.TrimSpace(message.Content)
@@ -425,7 +452,7 @@ func chatMessagesToHistories(messages []storage.ChatMessage) map[string][]*schem
 		return nil
 	}
 	return map[string][]*schema.Message{
-		agent.DefaultSessionID: history,
+		sessionID: history,
 	}
 }
 
@@ -465,6 +492,14 @@ func trimChatMessages(messages []storage.ChatMessage, max int) []storage.ChatMes
 		return messages
 	}
 	return append([]storage.ChatMessage(nil), messages[len(messages)-max:]...)
+}
+
+func normalizeSessionID(sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return agent.DefaultSessionID
+	}
+	return sessionID
 }
 
 func applyRuntimeOverrides(cfg *appconfig.Config, opts cliOptions) {
