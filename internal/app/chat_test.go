@@ -1,12 +1,13 @@
-package cli
+package app
 
 import (
 	"testing"
 	"time"
 
+	"github.com/cloudwego/eino/schema"
+
 	appconfig "github.com/Serendipity565/gora/internal/config"
 	storage "github.com/Serendipity565/gora/internal/repository"
-	"github.com/cloudwego/eino/schema"
 )
 
 func TestResolveStoredLLMIndexPrefersName(t *testing.T) {
@@ -24,39 +25,40 @@ func TestResolveStoredLLMIndexPrefersName(t *testing.T) {
 	}
 }
 
-func TestResolveStoredLLMIndexFallsBackToModel(t *testing.T) {
-	t.Parallel()
-
-	cfg := testModelSelectionConfig()
-	index, ok := resolveStoredLLMIndex(cfg, storage.ModelSelection{
-		Model: "deepseek-reasoner",
-	})
-
-	if !ok || index != 1 {
-		t.Fatalf("expected model index, got index=%d ok=%v", index, ok)
-	}
-}
-
-func TestResolveStoredLLMIndexRejectsMismatchedIndex(t *testing.T) {
+// resolveStoredLLMIndex 现在只接受 LLMName。Model 单独存在不再被回退使用，
+// 因为项目约定 name 是模型的唯一标识。
+func TestResolveStoredLLMIndexRequiresName(t *testing.T) {
 	t.Parallel()
 
 	cfg := testModelSelectionConfig()
 	if index, ok := resolveStoredLLMIndex(cfg, storage.ModelSelection{
+		Model: "deepseek-reasoner",
+	}); ok {
+		t.Fatalf("expected lookup without LLMName to fail, got index=%d", index)
+	}
+}
+
+func TestResolveStoredLLMIndexRejectsUnknownName(t *testing.T) {
+	t.Parallel()
+
+	cfg := testModelSelectionConfig()
+	if index, ok := resolveStoredLLMIndex(cfg, storage.ModelSelection{
+		LLMName:  "vanished",
 		Model:    "missing-model",
 		LLMIndex: 1,
 	}); ok {
-		t.Fatalf("expected no match, got index=%d", index)
+		t.Fatalf("expected unknown name to fail, got index=%d", index)
 	}
 }
 
 func TestModelSelectionUserID(t *testing.T) {
 	t.Setenv("GORA_USER_ID", "env-user")
-
-	if got := modelSelectionUserID(cliOptions{}); got != "env-user" {
+	if got := ModelSelectionUserID(); got != "env-user" {
 		t.Fatalf("expected env user id, got %q", got)
 	}
-	if got := modelSelectionUserID(cliOptions{UserID: "flag-user"}); got != "flag-user" {
-		t.Fatalf("expected flag user id, got %q", got)
+	t.Setenv("GORA_USER_ID", "")
+	if got := ModelSelectionUserID(); got != storage.LocalUserID {
+		t.Fatalf("expected fallback user id, got %q", got)
 	}
 }
 
@@ -152,7 +154,21 @@ func TestNormalizeSessionID(t *testing.T) {
 	}
 }
 
-func TestApplyRuntimeOverridesUsesProviderEnvAPIKeys(t *testing.T) {
+func TestNormalizeAddr(t *testing.T) {
+	t.Parallel()
+
+	if got := normalizeAddr("8081"); got != ":8081" {
+		t.Fatalf("unexpected normalized addr: %q", got)
+	}
+	if got := normalizeAddr(" 0.0.0.0:9000 "); got != "0.0.0.0:9000" {
+		t.Fatalf("unexpected preserved addr: %q", got)
+	}
+	if got := normalizeAddr(""); got != ":8080" {
+		t.Fatalf("expected default :8080, got %q", got)
+	}
+}
+
+func TestApplyEnvOverridesUsesProviderEnvAPIKeys(t *testing.T) {
 	t.Setenv("DEEPSEEK_API_KEY", "sk-deepseek")
 	t.Setenv("OPENAI_API_KEY", "sk-openai")
 
@@ -163,7 +179,7 @@ func TestApplyRuntimeOverridesUsesProviderEnvAPIKeys(t *testing.T) {
 		},
 	}
 
-	applyRuntimeOverrides(&cfg, cliOptions{RedisDB: -1})
+	ApplyEnvOverrides(&cfg)
 
 	if cfg.LLM[0].APIKey != "sk-deepseek" {
 		t.Fatalf("unexpected deepseek api key: %q", cfg.LLM[0].APIKey)
@@ -173,14 +189,14 @@ func TestApplyRuntimeOverridesUsesProviderEnvAPIKeys(t *testing.T) {
 	}
 }
 
-func TestApplyRuntimeOverridesUsesNestedRedisConfig(t *testing.T) {
+func TestApplyEnvOverridesUsesNestedRedisConfig(t *testing.T) {
 	t.Setenv("GORA_REDIS_ADDR", " 127.0.0.1:6379 ")
 	t.Setenv("GORA_REDIS_PASSWORD", " secret ")
 	t.Setenv("GORA_REDIS_DB", "2")
 	t.Setenv("GORA_SHORT_TERM_MEMORY_TTL", " 12h ")
 
 	cfg := appconfig.Config{}
-	applyRuntimeOverrides(&cfg, cliOptions{RedisDB: -1})
+	ApplyEnvOverrides(&cfg)
 
 	redis := cfg.RedisSettings()
 	if redis.Addr != "127.0.0.1:6379" {

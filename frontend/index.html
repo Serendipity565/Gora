@@ -4,88 +4,158 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Gora Agent Playground</title>
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ctext y='52' font-size='52'%3E%F0%9F%A6%8D%3C/text%3E%3C/svg%3E" />
+    <!-- inline SVG favicon：黑底圆角方块 + 白色三轨道原子 + 三颗电子点。
+         浏览器 tab 在亮/暗主题下都保持高对比度。 -->
+    <link rel="icon" href="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%231f1f1f'/%3E%3Cg transform='translate(32 32)' fill='none' stroke='%23ffffff' stroke-width='3.6' stroke-linecap='round'%3E%3Cellipse rx='24' ry='10'/%3E%3Cellipse rx='24' ry='10' transform='rotate(60)'/%3E%3Cellipse rx='24' ry='10' transform='rotate(120)'/%3E%3C/g%3E%3Cg fill='%23ffffff'%3E%3Ccircle cx='52' cy='14' r='2.4'/%3E%3Ccircle cx='10' cy='38' r='2.4'/%3E%3Ccircle cx='46' cy='52' r='2'/%3E%3C/g%3E%3C/svg%3E" />
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <div id="app">
-      <header class="header">
-        <div class="logo">
-          <div class="logo-icon">🦍</div>
-          <div>
-            <div class="logo-title">Gora</div>
-            <div class="logo-subtitle">Goroutine + Agent</div>
-          </div>
-        </div>
-        <div class="header-controls">
-          <label class="header-field">
-            <span class="header-field-label">Agent</span>
-            <select id="agentSelect" class="header-select">
-              <option value="">默认</option>
-            </select>
-          </label>
-          <label class="header-field">
-            <span class="header-field-label">Model</span>
-            <select id="modelSelect" class="header-select" disabled>
-              <option value="">加载中…</option>
-            </select>
-          </label>
-          <label class="header-field">
-            <span class="header-field-label">Session</span>
-            <input
-              id="sessionInput"
-              class="header-input"
-              type="text"
-              autocomplete="off"
-              spellcheck="false"
-              placeholder="session-id"
-            />
-          </label>
-          <button id="btnNewSession" class="header-btn" type="button" title="开启新会话并清空对话">
-            ＋ 新会话
+    <div id="app" class="layout">
+      <!-- 左侧：会话列表 sidebar（参考 ChatGPT） -->
+      <aside id="sidebar" class="sidebar">
+        <div class="sidebar-top">
+          <button id="btnSidebarToggle" class="icon-btn sidebar-collapse" type="button" title="收起侧栏" aria-label="收起侧栏">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+              <rect x="3" y="4" width="18" height="16" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+              <line x1="9" y1="4" x2="9" y2="20" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+          </button>
+          <button id="btnNewSession" class="new-chat-btn" type="button" title="开启新会话">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+              <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 5v14M5 12h14" />
+            </svg>
+            <span>新会话</span>
           </button>
         </div>
-        <div class="header-right">
-          <span class="connection"><span class="status-dot"></span><span id="connectionLabel">连接中</span></span>
-          <span id="agentState" class="agent-state state-idle">空闲</span>
-          <span id="modelName" class="model-name">model: --</span>
-        </div>
-      </header>
 
+        <!-- TODO(history): 后端补"列出 session"接口后渲染真实历史；当前只放占位骨架。 -->
+        <div class="sidebar-section">
+          <div class="sidebar-section-title">最近</div>
+          <div id="historyList" class="history-list">
+            <div class="history-placeholder">暂无历史会话</div>
+          </div>
+        </div>
+
+        <div class="sidebar-bottom">
+          <div class="brand">
+            <div class="brand-icon" aria-hidden="true">
+              <!-- AI 原子图标：3 条 60° 间隔椭圆轨道 + 3 颗电子点 -->
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+                <ellipse cx="12" cy="12" rx="9.5" ry="3.8" />
+                <ellipse cx="12" cy="12" rx="9.5" ry="3.8" transform="rotate(60 12 12)" />
+                <ellipse cx="12" cy="12" rx="9.5" ry="3.8" transform="rotate(120 12 12)" />
+                <circle cx="20.4" cy="5.2" r="1" fill="currentColor" />
+                <circle cx="3.6" cy="14.5" r="1" fill="currentColor" />
+                <circle cx="18" cy="20" r="0.8" fill="currentColor" />
+              </svg>
+            </div>
+            <div class="brand-text">
+              <div class="brand-title">Gora</div>
+              <div class="brand-subtitle">Goroutine + Agent</div>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- 主对话区域 -->
       <main class="main">
+        <header class="topbar">
+          <button id="btnSidebarOpen" class="icon-btn topbar-collapse" type="button" title="展开侧栏" aria-label="展开侧栏">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+              <rect x="3" y="4" width="18" height="16" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+              <line x1="9" y1="4" x2="9" y2="20" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+          </button>
+
+          <div class="topbar-center">
+            <label class="topbar-field" title="当前 session id">
+              <span class="topbar-field-label">session</span>
+              <input
+                id="sessionInput"
+                class="topbar-input"
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="default"
+              />
+            </label>
+          </div>
+
+          <div class="topbar-right">
+            <span class="connection" title="后端连接状态">
+              <span class="status-dot"></span>
+              <span id="connectionLabel">连接中</span>
+            </span>
+            <span id="agentState" class="agent-state state-idle">空闲</span>
+            <button id="btnTheme" class="icon-btn" type="button" title="切换主题" aria-label="切换主题">
+              <span id="themeIcon" class="theme-icon" aria-hidden="true">🌙</span>
+            </button>
+            <button id="btnRightToggle" class="icon-btn" type="button" title="工具与统计" aria-label="工具与统计" aria-expanded="true">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                <rect x="3" y="4" width="18" height="16" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+                <line x1="15" y1="4" x2="15" y2="20" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+              </svg>
+            </button>
+          </div>
+        </header>
+
         <section class="chat-panel">
           <div id="messages" class="messages" aria-live="polite"></div>
-          <form id="composer" class="input-area" autocomplete="off">
-            <textarea
-              id="userInput"
-              class="user-input"
-              rows="1"
-              placeholder="输入消息，Enter 发送 / Shift+Enter 换行"
-            ></textarea>
-            <button id="btnSend" class="btn-send" type="submit" aria-label="发送">➤</button>
+
+          <form id="composer" class="composer" autocomplete="off">
+            <div class="composer-inner">
+              <textarea
+                id="userInput"
+                class="user-input"
+                rows="1"
+                placeholder="给 Gora 发送消息…"
+              ></textarea>
+              <button id="btnSend" class="btn-send" type="submit" aria-label="发送" title="发送 (Enter)">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                  <path fill="currentColor" d="M3.4 20.4 22 12 3.4 3.6 3.4 10l13 2-13 2z" />
+                </svg>
+              </button>
+            </div>
+            <div class="composer-hint">
+              <label class="composer-model" title="切换会话使用的模型">
+                <span class="composer-model-label">模型</span>
+                <select id="modelSelect" class="composer-model-select" disabled>
+                  <option value="">加载中…</option>
+                </select>
+              </label>
+              <span class="composer-hint-tip">Enter 发送 · Shift+Enter 换行</span>
+            </div>
           </form>
         </section>
+      </main>
 
-        <aside class="side-panel">
-          <section>
-            <h3>📊 本轮统计</h3>
-            <div class="metric-card">
-              <div class="metric-label">事件数</div>
-              <div id="eventCount" class="metric-value accent">0</div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-label">工具调用</div>
-              <div id="toolCallCount" class="metric-value tool">0</div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-label">流式片段</div>
-              <div id="chunkCount" class="metric-value success">0</div>
+      <!-- 右侧：可折叠的统计 / 工具 / 示例面板 -->
+      <aside id="rightPanel" class="right-panel">
+        <header class="right-panel-header">
+          <span class="right-panel-title">面板</span>
+        </header>
+        <div class="right-panel-body">
+          <section class="panel-section">
+            <h3>本轮统计</h3>
+            <div class="metric-grid">
+              <div class="metric-card">
+                <div class="metric-label">事件数</div>
+                <div id="eventCount" class="metric-value accent">0</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-label">工具调用</div>
+                <div id="toolCallCount" class="metric-value tool">0</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-label">流式片段</div>
+                <div id="chunkCount" class="metric-value success">0</div>
+              </div>
             </div>
           </section>
 
-          <section class="collapsible-section" data-section="tools">
+          <section class="panel-section collapsible-section" data-section="tools">
             <button type="button" class="collapsible-header" aria-expanded="true">
-              <span class="collapsible-title">🔧 可用工具</span>
+              <span class="collapsible-title">可用工具</span>
               <span class="collapsible-chevron" aria-hidden="true">▾</span>
             </button>
             <div class="collapsible-content">
@@ -95,22 +165,25 @@
             </div>
           </section>
 
-          <section>
-            <h3>💡 试试这些</h3>
-            <div class="tool-list">
-              <button type="button" class="tool-item example" data-prompt="帮我查一下 https://api.github.com 的状态">
-                🔍 查 GitHub API 状态
+          <section class="panel-section">
+            <h3>试试这些</h3>
+            <div class="example-list">
+              <button type="button" class="example-card" data-prompt="帮我查一下 https://api.github.com 的状态">
+                <span class="example-emoji">🔍</span>
+                <span class="example-text">查 GitHub API 状态</span>
               </button>
-              <button type="button" class="tool-item example" data-prompt="用 GET 请求 https://httpbin.org/json 并告诉我返回了什么">
-                📡 请求 httpbin.org
+              <button type="button" class="example-card" data-prompt="用 GET 请求 https://httpbin.org/json 并告诉我返回了什么">
+                <span class="example-emoji">📡</span>
+                <span class="example-text">请求 httpbin.org</span>
               </button>
-              <button type="button" class="tool-item example" data-prompt="你好，介绍一下你自己">
-                👋 简单聊天
+              <button type="button" class="example-card" data-prompt="你好，介绍一下你自己">
+                <span class="example-emoji">👋</span>
+                <span class="example-text">简单聊天</span>
               </button>
             </div>
           </section>
-        </aside>
-      </main>
+        </div>
+      </aside>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

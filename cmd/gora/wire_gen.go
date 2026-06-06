@@ -4,7 +4,7 @@
 //go:build !wireinject
 // +build !wireinject
 
-package wired
+package main
 
 import (
 	"context"
@@ -15,11 +15,13 @@ import (
 
 // Injectors from wire.go:
 
-// InitInfra 装配运行 Gora 所需的基础设施依赖（工具注册表、MySQL、Redis）。
+// initInfra 装配运行 Gora 所需的基础设施依赖（工具注册表、MySQL、Redis）。
 //
-// 返回的 cleanup 会按 wire 生成的反序依次释放底层资源；调用方应在错误处理与正常退出
-// 时都执行 cleanup（典型用法：拿到后立刻 defer cleanup()）。
-func InitInfra(ctx context.Context, cfg config.Config) (*app.Infra, func(), error) {
+// 与 main.go 同包（kratos 风格）：cmd/gora/main.go 直接调用，再把 *app.Infra 交给 app.Run。
+// 修改任何 ProviderSet 后必须执行 `make wire` 重新生成 cmd/gora/wire_gen.go。
+//
+// 返回的 cleanup 会按 wire 生成的反序依次释放底层资源；调用方应在拿到后立即 defer。
+func initInfra(ctx context.Context, cfg config.Config) (*app.Infra, func(), error) {
 	registry, err := ioc.NewToolRegistry()
 	if err != nil {
 		return nil, nil, err

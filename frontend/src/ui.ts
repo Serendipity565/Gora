@@ -1,7 +1,7 @@
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 
-import type { AgentEvent, AgentInfo, ToolInfo } from "./types";
+import type { AgentEvent, ToolInfo } from "./types";
 
 // marked 配置：开启 GFM、把单换行视为 <br>，与 ChatGPT 风格的输出更接近。
 marked.setOptions({
@@ -35,51 +35,15 @@ export function clearMessages(container: HTMLElement): void {
   container.innerHTML = "";
 }
 
-/**
- * 把 AgentInfo 列表渲染为 <select> 选项；若 currentID 命中其中之一会保留选中。
- * 返回最终生效的 agent_id（可能与传入不同：传入为空时回落到第一个）。
- */
-export function renderAgentOptions(
-  selectEl: HTMLSelectElement,
-  agents: { id: string; model?: string; type?: string }[],
-  currentID: string,
-): string {
-  selectEl.innerHTML = "";
-  if (agents.length === 0) {
-    const option = document.createElement("option");
-    option.value = "";
-    option.textContent = "（无已注册 agent）";
-    selectEl.appendChild(option);
-    selectEl.disabled = true;
-    return "";
-  }
-  selectEl.disabled = false;
-  let resolvedID = "";
-  for (const agent of agents) {
-    const option = document.createElement("option");
-    option.value = agent.id;
-    const suffix = agent.model ? ` · ${agent.model}` : agent.type ? ` · ${agent.type}` : "";
-    option.textContent = `${agent.id}${suffix}`;
-    if (agent.id === currentID) {
-      option.selected = true;
-      resolvedID = agent.id;
-    }
-    selectEl.appendChild(option);
-  }
-  if (!resolvedID) {
-    selectEl.selectedIndex = 0;
-    resolvedID = selectEl.value;
-  }
-  return resolvedID;
-}
-
 export function appendUserBubble(container: HTMLElement, text: string): void {
+  // ChatGPT 风格：用户消息只有一个右对齐的 bubble，不带头像。
   const wrapper = document.createElement("div");
   wrapper.className = "message user";
-  wrapper.innerHTML = `
-    <div class="avatar user">👤</div>
-    <div class="bubble">${escapeHtml(text)}</div>
-  `;
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  bubble.textContent = text; // 用 textContent 自动转义并保留换行
+  bubble.style.whiteSpace = "pre-wrap";
+  wrapper.appendChild(bubble);
   container.appendChild(wrapper);
   scrollToBottom(container);
 }
@@ -106,12 +70,33 @@ export interface AgentBubbleHandle {
 export function appendAgentBubble(
   container: HTMLElement,
   onPermission?: PermissionHandler,
+  modelLabel?: string,
 ): AgentBubbleHandle {
   const wrapper = document.createElement("div");
   wrapper.className = "message agent";
-  wrapper.innerHTML = `<div class="avatar agent">🦍</div>`;
+  // AI 原子图标（与 sidebar brand-icon / favicon 同款），保持视觉一致。
+  wrapper.innerHTML = `
+    <div class="avatar agent" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+        <ellipse cx="12" cy="12" rx="9.5" ry="3.8" />
+        <ellipse cx="12" cy="12" rx="9.5" ry="3.8" transform="rotate(60 12 12)" />
+        <ellipse cx="12" cy="12" rx="9.5" ry="3.8" transform="rotate(120 12 12)" />
+        <circle cx="20.4" cy="5.2" r="1" fill="currentColor" />
+        <circle cx="3.6" cy="14.5" r="1" fill="currentColor" />
+        <circle cx="18" cy="20" r="0.8" fill="currentColor" />
+      </svg>
+    </div>
+  `;
   const bubble = document.createElement("div");
   bubble.className = "bubble";
+  // 调试用：把当前模型名打到气泡顶部，方便观察哪条回答出自哪个模型。
+  const label = (modelLabel ?? "").trim();
+  if (label) {
+    const badge = document.createElement("div");
+    badge.className = "model-badge";
+    badge.textContent = `model: ${label}`;
+    bubble.appendChild(badge);
+  }
   wrapper.appendChild(bubble);
   container.appendChild(wrapper);
   scrollToBottom(container);
@@ -476,19 +461,12 @@ export function wireCollapsibleSections(root: ParentNode = document): void {
   });
 }
 
-export function renderAgentMeta(
+export function renderModelMeta(
   modelEl: HTMLElement,
   stateEl: HTMLElement,
-  agents: AgentInfo[],
 ): void {
-  const first = agents[0];
-  if (!first) {
-    modelEl.textContent = "model: 未注册";
-    setAgentState(stateEl, "idle");
-    return;
-  }
-  modelEl.textContent = first.model ? `model: ${first.model}` : `agent: ${first.id}`;
-  setAgentState(stateEl, first.state ?? "idle");
+  modelEl.textContent = "model: 未注册";
+  setAgentState(stateEl, "idle");
 }
 
 export function renderConnection(

@@ -54,7 +54,8 @@ func TestLoadSupportsOpenAIProvider(t *testing.T) {
 
 	path := writeConfig(t, withAgentConfig(`
 llm:
-  - provider: openai
+  - name: gpt-mini
+    provider: openai
     api_key: sk-openai
     base_url: https://api.openai.com/v1
     model: gpt-4o-mini
@@ -267,14 +268,38 @@ func TestFindLLM(t *testing.T) {
 		},
 	}
 
-	if _, llm, err := cfg.FindLLM("2"); err != nil || llm.Model != "deepseek-reasoner" {
-		t.Fatalf("find by index failed: %v, %#v", err, llm)
-	}
+	// 命中：按 name（大小写不敏感）。
 	if _, llm, err := cfg.FindLLM("chat"); err != nil || llm.Model != "deepseek-chat" {
 		t.Fatalf("find by name failed: %v, %#v", err, llm)
 	}
-	if _, llm, err := cfg.FindLLM("deepseek-reasoner"); err != nil || llm.Name != "reasoner" {
-		t.Fatalf("find by model failed: %v, %#v", err, llm)
+	if _, llm, err := cfg.FindLLM("REASONER"); err != nil || llm.Name != "reasoner" {
+		t.Fatalf("find by name (case-insensitive) failed: %v, %#v", err, llm)
+	}
+
+	// 不再支持按 model 字符串查找。
+	if _, _, err := cfg.FindLLM("deepseek-reasoner"); err == nil {
+		t.Fatalf("expected lookup by model string to fail, but it succeeded")
+	}
+
+	// 不再支持按序号查找。
+	if _, _, err := cfg.FindLLM("2"); err == nil {
+		t.Fatalf("expected numeric selector to fail, but it succeeded")
+	}
+
+	// 空 selector 直接报错。
+	if _, _, err := cfg.FindLLM("  "); err == nil {
+		t.Fatalf("expected empty selector to fail")
+	}
+}
+
+func TestValidateRequiresLLMName(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.LLM[0].Name = ""
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected missing llm name to fail validation")
 	}
 }
 
@@ -315,7 +340,7 @@ func TestLoadPanicsOnInvalidConfig(t *testing.T) {
 
 func validConfig() Config {
 	return Config{
-		LLM: []LLMConfig{{Provider: "deepseek", Model: "deepseek-chat", APIKey: "sk-test", BaseURL: "https://api.deepseek.com"}},
+		LLM: []LLMConfig{{Name: "chat", Provider: "deepseek", Model: "deepseek-chat", APIKey: "sk-test", BaseURL: "https://api.deepseek.com"}},
 		Agent: AgentConfig{
 			ID:                  "agent-1",
 			Name:                "gora-eino-agent",

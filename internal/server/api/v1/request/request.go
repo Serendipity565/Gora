@@ -15,7 +15,8 @@ type Chat struct {
 type ModelSelect struct {
 	// SessionID 为空时使用默认会话。
 	SessionID string `json:"session_id"`
-	// Selector 可以是序号（"1"）、name 或 model 字符串。
+	// Selector 取值为 LLMConfig.Name —— 项目内模型的唯一标识。
+	// 字段名保留 Selector 以避免 API 破坏；语义上等价于 "model name"。
 	Selector string `json:"selector" binding:"required"`
 }
 

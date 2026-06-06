@@ -44,7 +44,6 @@ export interface ModelInfo {
 
 export interface ChatRequest {
   message: string;
-  agent_id?: string;
   session_id?: string;
   /** 用户在前端 UI 中关闭的工具名列表，后端会拒绝模型调用其中任一工具。 */
   disabled_tools?: string[];

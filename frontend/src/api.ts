@@ -51,7 +51,12 @@ export async function getCurrentModel(
   return (await res.json()) as { model: ModelInfo; explicit: boolean };
 }
 
-/** 把某 session 切换到 selector 指定的模型，selector 可以是 index/name/model。 */
+/**
+ * 把某 session 切换到 selector 指定的模型。
+ *
+ * selector 取值固定为 LLMConfig.Name —— 项目约定 name 是模型唯一标识。
+ * 字段名保留 selector 仅是 API 兼容；语义上等价于 model name。
+ */
 export async function selectModel(sessionID: string, selector: string): Promise<ModelInfo> {
   const res = await fetch(`${API_BASE}/api/models/select`, {
     method: "POST",

@@ -3,7 +3,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -55,8 +54,14 @@ type Config struct {
 }
 
 // LLMConfig 是模型服务配置。
+//
+// 约定：
+//   - Name 是项目内的"模型唯一标识"，所有查找 / 展示 / 持久化都用它。
+//     必填、配置内不重复（大小写不敏感）。
+//   - Model 仅在调用底层 LLM API 时作为请求参数（即 ChatModelConfig），
+//     不参与任何 selector / 展示逻辑。
 type LLMConfig struct {
-	Name     string `mapstructure:"name" yaml:"name"`
+	Name     string `mapstructure:"name" yaml:"name" validate:"required"`
 	Provider string `mapstructure:"provider" yaml:"provider" validate:"required"`
 	APIKey   string `mapstructure:"api_key" yaml:"api_key"`
 	BaseURL  string `mapstructure:"base_url" yaml:"base_url"`
@@ -186,50 +191,35 @@ func (c Config) RedisSettings() RedisConfig {
 	return c.Redis
 }
 
-// FindLLM 根据序号、name 或 model 查找目标 LLM。
-func (c Config) FindLLM(selector string) (int, LLMConfig, error) {
-	selector = strings.TrimSpace(selector)
-	if selector == "" {
-		return 0, LLMConfig{}, fmt.Errorf("模型选择器不能为空")
-	}
-
-	if index, err := strconv.Atoi(selector); err == nil {
-		if index < 1 || index > len(c.LLM) {
-			return 0, LLMConfig{}, fmt.Errorf("模型序号超出范围: %d", index)
-		}
-		return index - 1, c.LLM[index-1], nil
+// FindLLM 按 LLMConfig.Name 查找目标模型。
+//
+// 约定：name 是项目内模型的唯一标识；不再支持按序号 / model 字符串查找，
+// 这两个回退路径既容易引起 0/1-based 错位，也违反"name 唯一标识"的约束。
+func (c Config) FindLLM(name string) (int, LLMConfig, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return 0, LLMConfig{}, fmt.Errorf("模型 name 不能为空")
 	}
 
 	for index, llmConfig := range c.LLM {
-		if strings.EqualFold(strings.TrimSpace(llmConfig.Name), selector) {
+		if strings.EqualFold(strings.TrimSpace(llmConfig.Name), name) {
 			return index, llmConfig, nil
 		}
 	}
 
-	for index, llmConfig := range c.LLM {
-		if strings.EqualFold(strings.TrimSpace(llmConfig.Model), selector) {
-			return index, llmConfig, nil
-		}
-	}
-
-	return 0, LLMConfig{}, fmt.Errorf("未找到模型: %s", selector)
+	return 0, LLMConfig{}, fmt.Errorf("未找到模型: %s", name)
 }
 
-// DisplayName 返回用于展示和 `/model` 切换的可读名称。
+// DisplayName 返回展示用名称。当前等价于 Name —— 整个项目把 name 当作
+// 唯一标识（含展示），不再做 "name (model)" 这种拼接。
+//
+// 保留 index 参数仅做向后兼容；name 缺失时退化为 "llm-N" 兜底（理论上
+// 不会触发，因为 Validate 会拒绝空 name）。
 func (c LLMConfig) DisplayName(index int) string {
-	name := strings.TrimSpace(c.Name)
-	model := strings.TrimSpace(c.Model)
-
-	switch {
-	case name != "" && model != "" && !strings.EqualFold(name, model):
-		return fmt.Sprintf("%s (%s)", name, model)
-	case name != "":
+	if name := strings.TrimSpace(c.Name); name != "" {
 		return name
-	case model != "":
-		return model
-	default:
-		return fmt.Sprintf("llm-%d", index+1)
 	}
+	return fmt.Sprintf("llm-%d", index+1)
 }
 
 // ChatModelConfig 转换为 LLM 层使用的模型配置。

@@ -32,7 +32,7 @@ Gora 把 LLM Agent 的执行过程做成一颗能直接观察的"心脏"：思�
 ```
 .
 ├── cmd/
-│   └── gora/main.go              # 程序入口，调用 internal/cli.Execute
+│   └── gora/                     # 程序入口（main.go + wire.go + wire_gen.go）
 ├── internal/
 │   ├── agent/                    # Agent 框架
 │   │   ├── core/                 # Agent 接口、BaseAgent、Event、ToolPermissionGate
@@ -52,10 +52,8 @@ Gora 把 LLM Agent 的执行过程做成一颗能直接观察的"心脏"：思�
 │   │   ├── dao/                  # MySQL 持久化（GORM）
 │   │   ├── cache/                # Redis 短期记忆
 │   │   └── repository.go         # 别名 + Open* 入口
-│   ├── app/                      # 聚合类型 Infra（Registry/DB/Cache）
+│   ├── app/                      # Infra 聚合 + Run + Runner + chat helpers
 │   ├── ioc/                      # 基础设施 wire provider（MySQL/Redis/Registry）
-│   ├── wired/                    # wire 注入器（wire.go + 生成的 wire_gen.go）
-│   ├── cli/                      # Cobra 命令（root / serve / chat）
 │   └── config/                   # YAML 配置加载与校验
 ├── configs/                      # YAML 配置文件
 │   ├── config.example.yaml       # 模板
@@ -99,16 +97,9 @@ make server
 # 等价于：go run ./cmd/gora --config configs/config.yaml --addr :8080
 ```
 
-打开 <http://localhost:8080> 即可看到内嵌的 Playground 页面。
+打开 <http://localhost:8080/health> 验证服务起来了；前端单独跑（见下一步）。
 
-### 3. CLI 对话模式
-
-```bash
-make chat
-# 等价于：go run ./cmd/gora chat --config configs/config.yaml
-```
-
-### 4. 前端开发模式（带 HMR）
+### 3. 前端开发模式（带 HMR）
 
 ```bash
 # 终端 1：后端
@@ -119,11 +110,10 @@ cd frontend && npm install   # 首次运行需要装依赖
 make frontend-dev            # http://localhost:5173，/api 与 /health 自动代理到 :8080
 ```
 
-### 5. 一体化生产预览
+### 4. 前端生产构建
 
 ```bash
-make frontend-build
-go run ./cmd/gora --config configs/config.yaml --static frontend/dist
+make frontend-build          # 产物在 frontend/dist/，可由任意静态服务器（nginx/vercel/...）托管
 ```
 
 ---
@@ -132,12 +122,11 @@ go run ./cmd/gora --config configs/config.yaml --static frontend/dist
 
 ```text
 make help            # 列出所有目标
-make server          # 启动 Gin Web 服务（内嵌前端）
-make chat            # 命令行 Agent 对话
+make server          # 启动 Gin Web 服务
 make frontend-dev    # Vite dev (5173)
 make frontend-build  # 构建到 frontend/dist
 make test            # go test ./...
-make wire            # 重新生成 internal/wired/wire_gen.go
+make wire            # 重新生成 cmd/gora/wire_gen.go
 ```
 
 可覆盖变量：
@@ -146,37 +135,27 @@ make wire            # 重新生成 internal/wired/wire_gen.go
 make server CONFIG=configs/local.yaml ADDR=:9090
 ```
 
-复杂参数（如 `--model`、`--max-history`）直接走原生命令：
-
-```bash
-go run ./cmd/gora --config configs/config.yaml --model gpt-4o-mini --max-history 50
-```
-
 ---
 
-## CLI 参数（root + chat 共享）
+## 命令行参数
+
+后端只有一个二进制 `cmd/gora`，无子命令，仅三个 flag：
 
 | Flag | 说明 |
 |---|---|
 | `--config` | YAML 配置路径，默认 `configs/config.yaml` |
-| `--api-key` | 覆盖所有模型的 API Key |
-| `--base-url` | 覆盖首个模型的 OpenAI 兼容接口地址 |
-| `--model` | 覆盖首个模型名 |
-| `--agent-id` | 覆盖配置中的 Agent ID |
-| `--user-id` | 模型选择持久化使用的用户 ID（默认 `local`） |
-| `--database-url` | 覆盖 MySQL DSN |
-| `--redis-addr` / `--redis-password` / `--redis-db` | 覆盖 Redis 连接 |
-| `--short-term-memory-ttl` | 覆盖短期记忆过期时间 |
-| `--max-history` | 覆盖历史消息保留数 |
-| `--max-chunk-runes` | 覆盖单个流式事件字符数 |
+| `--addr` | HTTP 监听地址，默认 `:8080` |
+| `--cors` | 是否启用 CORS 中间件（默认开启，前端跨域需要） |
 
-仅 web 服务（root 命令）特有：
+其它运行时覆盖只通过环境变量：
 
-| Flag | 说明 |
+| 变量 | 用途 |
 |---|---|
-| `--addr` | 监听地址，默认 `:8080` |
-| `--static` | 用指定目录覆盖内嵌前端（用于挂载 `frontend/dist`） |
-| `--cors` | 是否开启简单 CORS（默认开启） |
+| `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` | 按 provider 自动写入 cfg 中空 APIKey 的项 |
+| `GORA_DATABASE_URL` | MySQL DSN |
+| `GORA_REDIS_ADDR` / `GORA_REDIS_PASSWORD` / `GORA_REDIS_DB` | Redis 连接 |
+| `GORA_SHORT_TERM_MEMORY_TTL` | 短期记忆过期时间，如 `24h` |
+| `GORA_USER_ID` | 模型选择持久化使用的 user_id，默认 `local` |
 
 ---
 
@@ -188,8 +167,11 @@ go run ./cmd/gora --config configs/config.yaml --model gpt-4o-mini --max-history
 | `GET`  | `/api/agents` | 列出可用 Agent |
 | `GET`  | `/api/agents/:agentId` | 单个 Agent 状态 |
 | `GET`  | `/api/tools` | 已注册工具元信息 |
-| `POST` | `/api/chat/:agentId` | 发起对话，返回 SSE 流（`thinking` / `tool_call` / `tool_result` / `chunk` / `done` / `error`） |
-| `GET`  | `/` | 前端入口（内嵌或 `--static`） |
+| `GET`  | `/api/models` | 列出可选 LLM |
+| `GET`  | `/api/models/current` | 某 session 当前的 LLM |
+| `POST` | `/api/models/select` | 切换某 session 的 LLM |
+| `POST` | `/api/chat[/:agentId]` | 发起对话，返回 SSE 流（`thinking` / `tool_call` / `tool_result` / `chunk` / `done` / `error` / `tool_permission_request`） |
+| `POST` | `/api/chat/tool-permission` | 前端把工具授权决定回写给等待中的 Agent |
 
 ---
 

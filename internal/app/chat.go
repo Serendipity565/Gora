@@ -1,11 +1,9 @@
-package cli
+package app
 
 import (
 	"context"
 	"fmt"
 	"io"
-	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -18,11 +16,17 @@ import (
 	storage "github.com/Serendipity565/gora/internal/repository"
 )
 
+// historyCarrier 抽象出"能快照 / 恢复多 session 历史"的 Agent。
+//
+// EinoAgent 实现了它；存在这个接口主要是为了让历史读写助手不直接耦合 EinoAgent。
 type historyCarrier interface {
 	RestoreHistories(map[string][]*schema.Message)
 	SnapshotHistories() map[string][]*schema.Message
 }
 
+// buildChatAgent 根据 cfg + llmIndex 创建一个 *eino.EinoAgent。
+//
+// previous 不为空时会复制其会话历史到新 Agent（用于切换模型时保留上下文）。
 func buildChatAgent(
 	ctx context.Context,
 	cfg appconfig.Config,
@@ -54,6 +58,10 @@ func buildChatAgent(
 	return chatAgent, nil
 }
 
+// restoreModelSelection 从 modelStore 读出 (user, agent, session) 之前选择的 LLM 索引。
+//
+// 任何错误（包括读取失败 / 命中已不存在的模型）都会以 "回落到默认 0" 处理，
+// 但会把诊断信息写到 errOut 提示用户。
 func restoreModelSelection(
 	ctx context.Context,
 	out, errOut io.Writer,
@@ -73,14 +81,15 @@ func restoreModelSelection(
 
 	index, ok := resolveStoredLLMIndex(cfg, selection)
 	if !ok {
-		fmt.Fprintf(errOut, "已保存的模型选择不在当前配置中，将使用默认模型: %s\n", selection.Model)
+		fmt.Fprintf(errOut, "已保存的模型 name 不在当前配置中，将使用默认模型: %s\n", selection.LLMName)
 		return 0
 	}
 
-	fmt.Fprintf(out, "已恢复模型选择: %s\n", cfg.LLM[index].DisplayName(index))
+	fmt.Fprintf(out, "已恢复模型选择: %s\n", cfg.LLM[index].Name)
 	return index
 }
 
+// saveModelSelection 把当前选择写入 modelStore。失败时只打印诊断，不阻塞主流程。
 func saveModelSelection(
 	ctx context.Context,
 	errOut io.Writer,
@@ -109,26 +118,24 @@ func saveModelSelection(
 	}
 }
 
+// resolveStoredLLMIndex 把存储中读到的 ModelSelection 翻译成当前 cfg.LLM 的下标。
+//
+// 唯一依据是 selection.LLMName —— 项目约定 name 是模型的唯一标识。
+// 历史遗留的 Model / LLMIndex 字段已不参与查找，它们仅作为读时的诊断信息。
 func resolveStoredLLMIndex(cfg appconfig.Config, selection storage.ModelSelection) (int, bool) {
-	if strings.TrimSpace(selection.LLMName) != "" {
-		if index, _, err := cfg.FindLLM(selection.LLMName); err == nil {
-			return index, true
-		}
+	name := strings.TrimSpace(selection.LLMName)
+	if name == "" {
+		return 0, false
 	}
-	if strings.TrimSpace(selection.Model) != "" {
-		if index, _, err := cfg.FindLLM(selection.Model); err == nil {
-			return index, true
-		}
-	}
-	if selection.LLMIndex >= 0 && selection.LLMIndex < len(cfg.LLM) {
-		llmConfig := cfg.LLM[selection.LLMIndex]
-		if selection.Model == "" || strings.EqualFold(llmConfig.Model, selection.Model) || strings.EqualFold(llmConfig.Name, selection.LLMName) {
-			return selection.LLMIndex, true
-		}
+	if index, _, err := cfg.FindLLM(name); err == nil {
+		return index, true
 	}
 	return 0, false
 }
 
+// restoreConversationContext 优先用 Redis 短期记忆恢复上下文；命中失败回退到 MySQL 历史。
+//
+// 从 MySQL 拉到的历史会被回填到 Redis，避免下次重复 round-trip。
 func restoreConversationContext(
 	ctx context.Context,
 	out, errOut io.Writer,
@@ -181,6 +188,10 @@ func restoreConversationContext(
 	}
 }
 
+// persistConversationTurn 把刚结束的一轮对话（user input + assistant reply）落到 MySQL，
+// 并把当前 chatAgent 的全部 schema.Message 同步到 Redis 短期记忆。
+//
+// 任意一步失败都不会回滚，只把诊断写到 errOut。
 func persistConversationTurn(
 	ctx context.Context,
 	errOut io.Writer,
@@ -232,6 +243,9 @@ func persistConversationTurn(
 	}
 }
 
+// chatMessagesToHistories 把 storage 里读出的消息转成 eino schema.Message，按 session 分组。
+//
+// 工具消息不需要回填给 LLM，直接丢弃；不识别 role 也丢弃。
 func chatMessagesToHistories(sessionID string, messages []storage.ChatMessage) map[string][]*schema.Message {
 	sessionID = normalizeSessionID(sessionID)
 	history := make([]*schema.Message, 0, len(messages))
@@ -257,6 +271,9 @@ func chatMessagesToHistories(sessionID string, messages []storage.ChatMessage) m
 	}
 }
 
+// schemaMessagesToChatMessages 把 eino schema.Message 转成可落库的 storage.ChatMessage。
+//
+// Tool 消息不写入历史表（与 chatMessagesToHistories 对称）。
 func schemaMessagesToChatMessages(
 	userID, agentID, sessionID string,
 	llmConfig appconfig.LLMConfig,
@@ -288,6 +305,7 @@ func schemaMessagesToChatMessages(
 	return out
 }
 
+// trimChatMessages 保留最后 max 条消息，超过 max 的从前面截断。
 func trimChatMessages(messages []storage.ChatMessage, max int) []storage.ChatMessage {
 	if max <= 0 || len(messages) <= max {
 		return messages
@@ -295,108 +313,14 @@ func trimChatMessages(messages []storage.ChatMessage, max int) []storage.ChatMes
 	return append([]storage.ChatMessage(nil), messages[len(messages)-max:]...)
 }
 
-func normalizeSessionID(sessionID string) string {
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		return eino.DefaultSessionID
+// shortTermTTLOrFallback 用于 Run 在装配时计算短期记忆 TTL；这里复用 options.go 的解析。
+//
+// 之所以单独包一层，是想让 Run 内部少一行 if-err 噪音。
+func shortTermTTLOrFallback(raw string, errOut io.Writer) time.Duration {
+	ttl, err := shortTermMemoryTTL(raw)
+	if err != nil {
+		fmt.Fprintf(errOut, "短期记忆 TTL 配置无效，将使用 24h: %v\n", err)
+		return 24 * time.Hour
 	}
-	return sessionID
-}
-
-func applyRuntimeOverrides(cfg *appconfig.Config, opts cliOptions) {
-	applyProviderAPIKeyEnv(cfg, "DEEPSEEK_API_KEY", "deepseek")
-	applyProviderAPIKeyEnv(cfg, "OPENAI_API_KEY", "openai")
-	if strings.TrimSpace(opts.APIKey) != "" {
-		for index := range cfg.LLM {
-			cfg.LLM[index].APIKey = strings.TrimSpace(opts.APIKey)
-		}
-	}
-	if strings.TrimSpace(opts.BaseURL) != "" && len(cfg.LLM) > 0 {
-		cfg.LLM[0].BaseURL = strings.TrimSpace(opts.BaseURL)
-	}
-	if strings.TrimSpace(opts.Model) != "" && len(cfg.LLM) > 0 {
-		cfg.LLM[0].Model = strings.TrimSpace(opts.Model)
-	}
-	if strings.TrimSpace(opts.AgentID) != "" {
-		cfg.Agent.ID = strings.TrimSpace(opts.AgentID)
-	}
-	if envDatabaseURL := strings.TrimSpace(os.Getenv("GORA_DATABASE_URL")); envDatabaseURL != "" && strings.TrimSpace(cfg.Database.URL) == "" {
-		cfg.Database.URL = envDatabaseURL
-	}
-	if strings.TrimSpace(opts.DatabaseURL) != "" {
-		cfg.Database.URL = strings.TrimSpace(opts.DatabaseURL)
-	}
-	if envRedisAddr := strings.TrimSpace(os.Getenv("GORA_REDIS_ADDR")); envRedisAddr != "" {
-		cfg.Database.Redis.Addr = envRedisAddr
-		cfg.Redis.Addr = envRedisAddr
-	}
-	if strings.TrimSpace(opts.RedisAddr) != "" {
-		cfg.Database.Redis.Addr = strings.TrimSpace(opts.RedisAddr)
-		cfg.Redis.Addr = strings.TrimSpace(opts.RedisAddr)
-	}
-	if envRedisPassword := strings.TrimSpace(os.Getenv("GORA_REDIS_PASSWORD")); envRedisPassword != "" {
-		cfg.Database.Redis.Password = envRedisPassword
-		cfg.Redis.Password = envRedisPassword
-	}
-	if strings.TrimSpace(opts.RedisPassword) != "" {
-		cfg.Database.Redis.Password = strings.TrimSpace(opts.RedisPassword)
-		cfg.Redis.Password = strings.TrimSpace(opts.RedisPassword)
-	}
-	if envRedisDB := strings.TrimSpace(os.Getenv("GORA_REDIS_DB")); envRedisDB != "" {
-		if redisDB, err := strconv.Atoi(envRedisDB); err == nil {
-			cfg.Database.Redis.DB = redisDB
-			cfg.Redis.DB = redisDB
-		}
-	}
-	if opts.RedisDB >= 0 {
-		cfg.Database.Redis.DB = opts.RedisDB
-		cfg.Redis.DB = opts.RedisDB
-	}
-	if envMemoryTTL := strings.TrimSpace(os.Getenv("GORA_SHORT_TERM_MEMORY_TTL")); envMemoryTTL != "" {
-		cfg.Database.Redis.ShortTermTTL = envMemoryTTL
-		cfg.Redis.ShortTermTTL = envMemoryTTL
-	}
-	if strings.TrimSpace(opts.ShortTermMemoryTTL) != "" {
-		cfg.Database.Redis.ShortTermTTL = strings.TrimSpace(opts.ShortTermMemoryTTL)
-		cfg.Redis.ShortTermTTL = strings.TrimSpace(opts.ShortTermMemoryTTL)
-	}
-	if opts.MaxHistoryMessages > 0 {
-		cfg.Agent.MaxHistoryMessages = opts.MaxHistoryMessages
-	}
-	if opts.MaxStreamChunkRunes > 0 {
-		cfg.Agent.MaxStreamChunkRunes = opts.MaxStreamChunkRunes
-	}
-}
-
-func applyProviderAPIKeyEnv(cfg *appconfig.Config, envName, provider string) {
-	apiKey := strings.TrimSpace(os.Getenv(envName))
-	if apiKey == "" {
-		return
-	}
-	for index := range cfg.LLM {
-		if !strings.EqualFold(strings.TrimSpace(cfg.LLM[index].Provider), provider) {
-			continue
-		}
-		if strings.TrimSpace(cfg.LLM[index].APIKey) == "" {
-			cfg.LLM[index].APIKey = apiKey
-		}
-	}
-}
-
-func shortTermMemoryTTL(raw string) (time.Duration, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return 24 * time.Hour, nil
-	}
-	return time.ParseDuration(raw)
-}
-
-func modelSelectionUserID(opts cliOptions) string {
-	if userID := strings.TrimSpace(opts.UserID); userID != "" {
-		return userID
-	}
-	if userID := strings.TrimSpace(os.Getenv("GORA_USER_ID")); userID != "" {
-		return userID
-	}
-	return storage.LocalUserID
+	return ttl
 }
