@@ -59,7 +59,12 @@ func Run(parent context.Context, out, errOut io.Writer, infra *Infra, cfg appcon
 	)
 	handler.RegisterAgent(runner)
 
-	router := server.NewRouter(handler, server.RouterOptions{CORS: opts.CORS})
+	var authHandler *server.AuthHandler
+	if infra.Middlewares != nil {
+		authHandler = server.NewAuthHandler(infra.JWT, infra.Middlewares.BasicAuth)
+	}
+
+	router := server.NewRouter(handler, authHandler, infra.Middlewares, server.RouterOptions{CORS: opts.CORS})
 
 	addr := normalizeAddr(opts.ServerAddr)
 	httpServer := &http.Server{

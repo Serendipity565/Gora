@@ -18,7 +18,11 @@ llm:
     base_url: "  https://api.deepseek.com  "
     model: "  deepseek-reasoner  "
 database:
-  url: "  gora:gora_dev_password@tcp(localhost:3306)/gora?charset=utf8mb4&parseTime=True&loc=Local  "
+  mysql:
+    addr: "  localhost:3306  "
+    dbname: "  gora  "
+    username: "  gora  "
+    password: "  gora_dev_password  "
 `))
 
 	cfg := Load(path)
@@ -116,29 +120,6 @@ llm:
 
 	defer expectPanic(t)
 	_ = Load(path)
-}
-
-func TestReadTrimsDatabaseURL(t *testing.T) {
-	t.Parallel()
-
-	path := writeConfig(t, withAgentConfig(`
-llm:
-  - provider: deepseek
-    api_key: sk-test
-    base_url: https://api.deepseek.com
-    model: deepseek-chat
-database:
-  url: "  gora:gora_dev_password@tcp(localhost:3306)/gora?charset=utf8mb4&parseTime=True&loc=Local  "
-`))
-
-	cfg, err := Read(path)
-	if err != nil {
-		t.Fatalf("Read failed: %v", err)
-	}
-	want := "gora:gora_dev_password@tcp(localhost:3306)/gora?charset=utf8mb4&parseTime=True&loc=Local"
-	if cfg.Database.URL != want {
-		t.Fatalf("unexpected database url: %q", cfg.Database.URL)
-	}
 }
 
 func TestReadBuildsDatabaseDSNFromMySQLConfig(t *testing.T) {

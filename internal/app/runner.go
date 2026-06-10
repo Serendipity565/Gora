@@ -19,8 +19,8 @@ import (
 // Runner 是 Gora 主入口注册到 server.Handler 的多会话 Agent 运行器。
 //
 // 它实现了：
-//   - server.SessionRunner：handler.HandleChat 据此驱动 SSE 对话
-//   - server.ModelSelector：handler.HandleListModels / HandleSelectModel 据此读写模型选择
+//   - server.SessionRunner：controller.HandleChat 据此驱动 SSE 对话
+//   - server.ModelSelector：controller.HandleListModels / HandleSelectModel 据此读写模型选择
 //
 // 状态语义（State()）：
 //   - StateIdle    刚创建 / 尚未运行

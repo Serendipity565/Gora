@@ -17,7 +17,6 @@ import (
 //
 //	DEEPSEEK_API_KEY              -> cfg.LLM[provider=deepseek].APIKey（仅在 cfg 该项为空时写入）
 //	OPENAI_API_KEY                -> 同上，provider=openai
-//	GORA_DATABASE_URL             -> cfg.Database.URL（仅在 cfg 为空时）
 //	GORA_REDIS_ADDR/PASSWORD/DB   -> cfg.Database.Redis.*（同时同步顶层 cfg.Redis 旧字段）
 //	GORA_SHORT_TERM_MEMORY_TTL    -> cfg.Database.Redis.ShortTermTTL
 //	GORA_USER_ID                  -> 通过 ModelSelectionUserID() 在 Run 中读取
@@ -25,9 +24,6 @@ func ApplyEnvOverrides(cfg *appconfig.Config) {
 	applyProviderAPIKeyEnv(cfg, "DEEPSEEK_API_KEY", "deepseek")
 	applyProviderAPIKeyEnv(cfg, "OPENAI_API_KEY", "openai")
 
-	if envDatabaseURL := strings.TrimSpace(os.Getenv("GORA_DATABASE_URL")); envDatabaseURL != "" && strings.TrimSpace(cfg.Database.URL) == "" {
-		cfg.Database.URL = envDatabaseURL
-	}
 	if envRedisAddr := strings.TrimSpace(os.Getenv("GORA_REDIS_ADDR")); envRedisAddr != "" {
 		cfg.Database.Redis.Addr = envRedisAddr
 		cfg.Redis.Addr = envRedisAddr

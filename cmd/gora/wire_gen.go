@@ -8,14 +8,18 @@ package main
 
 import (
 	"context"
+
 	"github.com/Serendipity565/gora/internal/app"
 	"github.com/Serendipity565/gora/internal/config"
 	"github.com/Serendipity565/gora/internal/ioc"
+	middleware2 "github.com/Serendipity565/gora/internal/middleware"
+	"github.com/Serendipity565/gora/internal/server/middleware"
 )
 
 // Injectors from wire.go:
 
-// initInfra 装配运行 Gora 所需的基础设施依赖（工具注册表、MySQL、Redis）。
+// initInfra 装配运行 Gora 所需的基础设施依赖（工具注册表、MySQL、Redis、Logger、JWT、
+// Middleware Bundle 等）。
 //
 // 与 main.go 同包（kratos 风格）：cmd/gora/main.go 直接调用，再把 *app.Infra 交给 app.Run。
 // 修改任何 ProviderSet 后必须执行 `make wire` 重新生成 cmd/gora/wire_gen.go。
@@ -35,12 +39,41 @@ func initInfra(ctx context.Context, cfg config.Config) (*app.Infra, func(), erro
 		cleanup()
 		return nil, nil, err
 	}
+	logger, cleanup3, err := ioc.NewLogger(cfg)
+	if err != nil {
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
+	jwt := ioc.NewJWT(cfg)
+	handlerFunc := middleware.NewCorsHandler()
+	logConfig := middleware.ProvideLogConfig(cfg)
+	loggerMiddleware := middleware2.NewLoggerMiddleware(logger, logConfig)
+	v := middleware.ProvideBasicAuthAccounts(cfg)
+	basicAuthMiddleware := middleware2.NewBasicAuthMiddleware(v)
+	authMiddleware := middleware2.NewAuthMiddleware(jwt)
+	limiterConfig := middleware.ProvideLimiterConfig(cfg)
+	client, cleanup4, err := ioc.NewRedisClient(ctx, cfg)
+	if err != nil {
+		cleanup3()
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
+	limitMiddleware := middleware2.NewLimitMiddleware(limiterConfig, client)
+	prometheusMiddleware := middleware.NewPrometheusMiddleware()
+	bundle := middleware.NewBundle(handlerFunc, loggerMiddleware, basicAuthMiddleware, authMiddleware, limitMiddleware, prometheusMiddleware)
 	infra := &app.Infra{
-		Registry: registry,
-		DB:       databaseStore,
-		Cache:    activeMemoryCache,
+		Registry:    registry,
+		DB:          databaseStore,
+		Cache:       activeMemoryCache,
+		Logger:      logger,
+		JWT:         jwt,
+		Middlewares: bundle,
 	}
 	return infra, func() {
+		cleanup4()
+		cleanup3()
 		cleanup2()
 		cleanup()
 	}, nil

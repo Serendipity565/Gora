@@ -15,6 +15,9 @@ import (
 	"github.com/Serendipity565/gora/internal/agent/tool"
 	"github.com/Serendipity565/gora/internal/repository/cache"
 	"github.com/Serendipity565/gora/internal/repository/dao"
+	"github.com/Serendipity565/gora/internal/server/middleware"
+	"github.com/Serendipity565/gora/pkg/ijwt"
+	"github.com/Serendipity565/gora/pkg/logger"
 )
 
 // Infra 聚合运行 Gora 所需的进程级基础设施依赖。
@@ -22,9 +25,12 @@ import (
 // 由 cmd/gora/wire.go 中的 InitInfra 装配；与 cli flag 无关，flag 派生的运行时参数
 // 由 Options + Run 自行处理。
 type Infra struct {
-	Registry *tool.Registry
-	DB       dao.DatabaseStore
-	Cache    cache.ActiveMemoryCache
+	Registry    *tool.Registry
+	DB          dao.DatabaseStore
+	Cache       cache.ActiveMemoryCache
+	Logger      logger.Logger
+	JWT         *ijwt.JWT
+	Middlewares *middleware.Bundle
 }
 
 // Options 控制 Run 的可调行为。当前只有两项；将来如需更多运行时开关，
