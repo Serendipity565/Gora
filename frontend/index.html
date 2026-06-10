@@ -10,7 +10,117 @@
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <div id="app" class="layout">
+    <!-- 登录 / 注册视图：未登录时显示；登录成功后由 main.ts 切换到 #chatView。 -->
+    <section id="authView" class="auth-view" hidden>
+      <div class="auth-card">
+        <header class="auth-header">
+          <div class="brand-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+              <ellipse cx="12" cy="12" rx="9.5" ry="3.8" />
+              <ellipse cx="12" cy="12" rx="9.5" ry="3.8" transform="rotate(60 12 12)" />
+              <ellipse cx="12" cy="12" rx="9.5" ry="3.8" transform="rotate(120 12 12)" />
+              <circle cx="20.4" cy="5.2" r="1" fill="currentColor" />
+              <circle cx="3.6" cy="14.5" r="1" fill="currentColor" />
+              <circle cx="18" cy="20" r="0.8" fill="currentColor" />
+            </svg>
+          </div>
+          <div class="auth-brand-text">
+            <h1 class="auth-title">Gora</h1>
+            <p class="auth-subtitle">Goroutine + Agent</p>
+          </div>
+        </header>
+
+        <div class="auth-tabs" role="tablist">
+          <button id="tabLogin" class="auth-tab is-active" type="button" role="tab" aria-selected="true">登录</button>
+          <button id="tabRegister" class="auth-tab" type="button" role="tab" aria-selected="false">注册</button>
+        </div>
+
+        <!-- 登录表单 -->
+        <form id="loginForm" class="auth-form" autocomplete="on">
+          <label class="auth-field">
+            <span class="auth-field-label">邮箱</span>
+            <input
+              id="loginEmail"
+              class="auth-input"
+              type="email"
+              name="email"
+              autocomplete="username"
+              placeholder="you@example.com"
+              required
+            />
+          </label>
+          <label class="auth-field">
+            <span class="auth-field-label">密码</span>
+            <input
+              id="loginPassword"
+              class="auth-input"
+              type="password"
+              name="password"
+              autocomplete="current-password"
+              placeholder="至少 6 位"
+              minlength="6"
+              required
+            />
+          </label>
+          <p id="loginError" class="auth-error" role="alert" hidden></p>
+          <button id="btnLogin" class="auth-submit" type="submit">登录</button>
+        </form>
+
+        <!-- 注册表单 -->
+        <form id="registerForm" class="auth-form" autocomplete="on" hidden>
+          <label class="auth-field">
+            <span class="auth-field-label">邮箱</span>
+            <input
+              id="registerEmail"
+              class="auth-input"
+              type="email"
+              name="email"
+              autocomplete="email"
+              placeholder="you@example.com"
+              required
+            />
+          </label>
+          <label class="auth-field">
+            <span class="auth-field-label">用户名</span>
+            <input
+              id="registerUsername"
+              class="auth-input"
+              type="text"
+              name="username"
+              autocomplete="nickname"
+              placeholder="2 ~ 50 字"
+              minlength="2"
+              maxlength="50"
+              required
+            />
+          </label>
+          <label class="auth-field">
+            <span class="auth-field-label">密码</span>
+            <input
+              id="registerPassword"
+              class="auth-input"
+              type="password"
+              name="new-password"
+              autocomplete="new-password"
+              placeholder="6 ~ 64 位"
+              minlength="6"
+              maxlength="64"
+              required
+            />
+          </label>
+          <p id="registerError" class="auth-error" role="alert" hidden></p>
+          <button id="btnRegister" class="auth-submit" type="submit">注册并登录</button>
+        </form>
+
+        <footer class="auth-footer">
+          <button id="btnAuthTheme" class="icon-btn" type="button" title="切换主题" aria-label="切换主题">
+            <span id="authThemeIcon" class="theme-icon" aria-hidden="true">🌙</span>
+          </button>
+        </footer>
+      </div>
+    </section>
+
+    <div id="chatView" class="layout" hidden>
       <!-- 左侧：会话列表 sidebar（参考 ChatGPT） -->
       <aside id="sidebar" class="sidebar">
         <div class="sidebar-top">
@@ -90,6 +200,21 @@
             <button id="btnTheme" class="icon-btn" type="button" title="切换主题" aria-label="切换主题">
               <span id="themeIcon" class="theme-icon" aria-hidden="true">🌙</span>
             </button>
+
+            <div id="userMenu" class="user-menu">
+              <button id="btnUser" class="user-menu-trigger" type="button" aria-haspopup="true" aria-expanded="false" title="账户">
+                <span id="userAvatar" class="user-avatar" aria-hidden="true">G</span>
+                <span id="userName" class="user-name">未登录</span>
+              </button>
+              <div id="userMenuPopover" class="user-menu-popover" role="menu" hidden>
+                <div class="user-menu-info">
+                  <div id="userMenuName" class="user-menu-name">—</div>
+                  <div id="userMenuEmail" class="user-menu-email">—</div>
+                </div>
+                <button id="btnLogout" class="user-menu-item" type="button" role="menuitem">退出登录</button>
+              </div>
+            </div>
+
             <button id="btnRightToggle" class="icon-btn" type="button" title="工具与统计" aria-label="工具与统计" aria-expanded="true">
               <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
                 <rect x="3" y="4" width="18" height="16" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6" />

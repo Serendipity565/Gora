@@ -7,19 +7,29 @@ import (
 	"net/http"
 
 	"github.com/Serendipity565/gora/internal/controller"
-	"github.com/gin-gonic/gin"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-
 	"github.com/Serendipity565/gora/internal/middleware"
+	"github.com/gin-gonic/gin"
 )
 
+// NewEngine 装配并返回一个配置好的 *gin.Engine。
+//
+// 中间件应用规则：
+//   - cors / log / limit 对所有 /api 请求生效；
+//   - auth (JWT) 仅对 user 模块的受保护接口生效；
+//   - basicauth 当前未使用（保留依赖项以便未来挂 /metrics）。
 func NewEngine(
 	corsMiddleware *middleware.CorsMiddleware,
 	authMiddleware *middleware.AuthMiddleware,
 	basicAuthMiddleware *middleware.BasicAuthMiddleware,
 	logMiddleware *middleware.LoggerMiddleware,
 	limitMiddleware *middleware.LimitMiddleware,
-	u controller.UserHandler,
+
+	user controller.UserHandler,
+	agent controller.AgentHandler,
+	tool controller.ToolHandler,
+	model controller.ModelHandler,
+	chat controller.ChatHandler,
+	health controller.HealthHandler,
 ) *gin.Engine {
 	gin.ForceConsoleColor()
 	r := gin.Default()
@@ -29,99 +39,28 @@ func NewEngine(
 	r.Use(logMiddleware.MiddlewareFunc())  // 日志中间件
 	r.Use(limitMiddleware.Middleware())    // 限流中间件
 
+	// 健康检查（不走 /api，不走鉴权）
+	RegisterHealthRouter(r, health)
+
 	api := r.Group("/api")
 
-	RegisterUserRouter(api, u, authMiddleware.MiddlewareFunc())
-	return r
+	RegisterUserRouter(api, user, authMiddleware.MiddlewareFunc())
+	RegisterAgentRouter(api, agent)
+	RegisterToolRouter(api, tool)
+	RegisterModelRouter(api, model)
+	RegisterChatRouter(api, chat)
 
-}
-
-// Options 控制 Gin 引擎的可选行为。
-type Options struct {
-	// CORS 为 true 时启用简易跨域中间件。
-	CORS bool
-}
-
-// New 装配并返回一个配置好的 *gin.Engine。
-//
-// h            — 请求处理实现。
-// authHandler  — /api/auth/* 登录接口；nil 时跳过该路由组。
-// mw           — middleware Bundle；nil 时仅启用 gin.Logger / gin.Recovery / 可选 CORS。
-// opts         — 中间件可选开关。
-//
-// 中间件应用规则（参考 muxi-Infra/FeedBack-Backend）：
-//   - log / prometheus / cors 对所有请求生效（log 内部按 LogConfig.SkipPaths 过滤）；
-//   - limit 对 /api 全组生效；
-//   - auth (JWT) 仅对 /api/secure/* 生效；
-//   - basicauth 仅对 /metrics 生效（运维端点）。
-func New(h *handler.Handler, authHandler *handler.AuthHandler, mw *middleware.Bundle, opts Options) *gin.Engine {
-	engine := gin.New()
-	engine.Use(gin.Recovery())
-
-	if mw != nil {
-		// 结构化日志取代 gin.Logger()。
-		engine.Use(mw.Log.Handle())
-		engine.Use(mw.Prometheus.Handle())
-	} else {
-		engine.Use(gin.Logger())
-	}
-	if opts.CORS {
-		if mw != nil {
-			engine.Use(mw.Cors)
-		} else {
-			engine.Use(middleware.Cors())
-		}
-	}
-
-	// 健康检查（不走鉴权 / 限流）。
-	engine.GET("/health", handler.HandleHealth)
-
-	// /metrics：basicauth 保护的运维端点。
-	if mw != nil {
-		engine.GET("/metrics", mw.BasicAuth.Handle(), gin.WrapH(promhttp.HandlerFor(
-			mw.Prometheus.Registry(), promhttp.HandlerOpts{},
-		)))
-	}
-
-	// /api 路由组：默认套上限流。
-	api := engine.Group("/api")
-	if mw != nil {
-		api.Use(mw.Limit.Handle())
-	}
-	{
-		// 登录接口（无鉴权 —— 鉴权前的入口）
-		if authHandler != nil {
-			api.POST("/auth/login", authHandler.HandleLogin)
-		}
-
-		// 业务接口（保留原有 API 表面，向后兼容）
-		api.POST("/chat", h.HandleChat)
-		api.POST("/chat/:agentId", h.HandleChat)
-		api.POST("/chat/tool-permission", h.HandleToolPermission)
-		api.GET("/agents", h.HandleListAgents)
-		api.GET("/agents/:agentId", h.HandleGetAgent)
-		api.GET("/agents/:agentId/state", h.HandleGetAgent)
-		api.GET("/tools", h.HandleListTools)
-		api.GET("/models", h.HandleListModels)
-		api.GET("/models/current", h.HandleGetCurrentModel)
-		api.POST("/models/select", h.HandleSelectModel)
-	}
-
-	// /api/secure：JWT 保护的子路由组。预留给未来"用户私有数据"类接口。
-	if mw != nil {
-		secure := api.Group("/secure")
-		secure.Use(mw.Auth.Handle())
-		// 示例：访问者必须携带有效 JWT，controller 通过 ginx.GetClaims 取用户信息。
-		secure.GET("/whoami", handler.HandleWhoAmI)
-	}
+	// basicAuthMiddleware 暂未挂载到任何路由（预留给未来 /metrics 等运维端点）。
+	// 保留参数避免 wire 忽略依赖，使重新引入时无需改动 NewEngine 签名。
+	_ = basicAuthMiddleware
 
 	// 纯 API 服务：非 /api、非 /health 的请求一律 404，提示用户去前端项目。
-	engine.NoRoute(func(c *gin.Context) {
+	r.NoRoute(func(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{
 			"error": "not found",
 			"hint":  "请确认请求地址是否正确",
 		})
 	})
 
-	return engine
+	return r
 }

@@ -1,4 +1,9 @@
-package app
+// Package runner 实现 Gora 的多会话 Agent 运行器。
+//
+// Runner 同时实现 server.SessionRunner 与 server.ModelSelector，用于挂到
+// AgentService / ModelService 上。它依赖运行时配置（cfg）才能起，
+// 因此不在 wire 阶段构造，而是在 main 里手动 New 出来再注入到 service。
+package runner
 
 import (
 	"context"
@@ -10,17 +15,14 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/Serendipity565/gora/internal/agent/core"
+	"github.com/Serendipity565/gora/internal/agent/eino"
 	"github.com/Serendipity565/gora/internal/agent/tool"
 	appconfig "github.com/Serendipity565/gora/internal/config"
 	storage "github.com/Serendipity565/gora/internal/repository"
 	"github.com/Serendipity565/gora/internal/server"
 )
 
-// Runner 是 Gora 主入口注册到 server.Handler 的多会话 Agent 运行器。
-//
-// 它实现了：
-//   - server.SessionRunner：controller.HandleChat 据此驱动 SSE 对话
-//   - server.ModelSelector：controller.HandleListModels / HandleSelectModel 据此读写模型选择
+// Runner 是注册到 AgentService 的多会话 Agent 运行器。
 //
 // 状态语义（State()）：
 //   - StateIdle    刚创建 / 尚未运行
@@ -38,26 +40,25 @@ type Runner struct {
 	memoryStore  storage.ActiveMemoryStore
 	userID       string
 	llmIndex     int
-	forceModel   bool
 	state        core.State
 	histories    map[string][]*schema.Message
 }
 
-// NewRunner 创建一个 Runner。
+// New 创建一个 Runner。
 //
-//   - llmIndex：当前会话默认的 LLM 索引；forceModel=true 时锁死，否则会被 modelStore 中的选择覆盖。
-//   - forceModel：通常对应"启动时显式指定模型"的场景；本仓库当前不通过 flag 暴露这个开关，
-//     保留参数是为了未来支持 GORA_FORCE_MODEL 之类的约束。
-func NewRunner(
+//	llmIndex 是当前会话默认的 LLM 索引；运行时会被 modelStore 中已保存的选择覆盖。
+func New(
 	cfg appconfig.Config,
 	registry *tool.Registry,
 	modelStore storage.ModelSelectionStore,
 	historyStore storage.ChatHistoryStore,
 	memoryStore storage.ActiveMemoryStore,
-	userID string,
 	llmIndex int,
-	forceModel bool,
 ) *Runner {
+	userID := strings.TrimSpace(cfg.Agent.UserID)
+	if userID == "" {
+		userID = storage.LocalUserID
+	}
 	return &Runner{
 		cfg:          cfg,
 		registry:     registry,
@@ -66,7 +67,6 @@ func NewRunner(
 		memoryStore:  memoryStore,
 		userID:       userID,
 		llmIndex:     llmIndex,
-		forceModel:   forceModel,
 		state:        core.StateIdle,
 		histories:    make(map[string][]*schema.Message),
 	}
@@ -150,16 +150,24 @@ func (r *Runner) Stop() error {
 	return nil
 }
 
-// PrimeHistories 在启动时把 chatAgent 的初始历史覆盖到 Runner，避免首次 RunSession
-// 跑出空上下文。典型用法：Run 装配阶段创建一次 chatAgent，把它的 (空) 快照灌进去做基线。
+// PrimeHistories 在启动时把 chatAgent 的初始历史覆盖到 Runner，
+// 避免首次 RunSession 跑出空上下文。
 func (r *Runner) PrimeHistories(histories map[string][]*schema.Message) {
 	r.replaceHistories(histories)
 }
 
+// BuildBootstrapAgent 用启动时的 LLMIndex 临时构造一个 EinoAgent，
+// 调用方据此 PrimeHistories；构造失败直接返回错误。
+func (r *Runner) BuildBootstrapAgent(ctx context.Context) (*eino.EinoAgent, error) {
+	return buildChatAgent(ctx, r.cfg, r.registry, r.llmIndex, nil)
+}
+
+// LLMIndex 返回 Runner 启动时落到的 LLM 索引（典型用于打日志展示当前模型名）。
+func (r *Runner) LLMIndex() int {
+	return r.llmIndex
+}
+
 func (r *Runner) resolveLLMIndex(ctx context.Context, sessionID string) int {
-	if r.forceModel {
-		return r.llmIndex
-	}
 	return restoreModelSelection(ctx, io.Discard, io.Discard, r.modelStore, r.userID, sessionID, r.cfg)
 }
 
@@ -206,13 +214,7 @@ func (r *Runner) ListModels() []server.ModelInfo {
 }
 
 // CurrentModel 返回某 session 当前使用的模型。
-//
-// forceModel=true 时永远返回锁定的 r.llmIndex，且 explicit=true。
 func (r *Runner) CurrentModel(ctx context.Context, sessionID string) (server.ModelInfo, bool, error) {
-	if r.forceModel {
-		return r.modelInfoAt(r.llmIndex), true, nil
-	}
-
 	sessionID = normalizeSessionID(sessionID)
 	selection, ok, err := r.modelStore.Get(ctx, r.userID, r.cfg.Agent.ID, sessionID)
 	if err != nil {
@@ -234,9 +236,6 @@ func (r *Runner) CurrentModel(ctx context.Context, sessionID string) (server.Mod
 //
 // 入参 name 即 LLMConfig.Name；项目约定 name 是模型的唯一标识。
 func (r *Runner) SelectModel(ctx context.Context, sessionID, name string) (server.ModelInfo, error) {
-	if r.forceModel {
-		return server.ModelInfo{}, fmt.Errorf("当前以锁定模式启动，禁止运行时切换模型")
-	}
 	if strings.TrimSpace(name) == "" {
 		return server.ModelInfo{}, fmt.Errorf("模型 name 不能为空")
 	}
@@ -262,4 +261,13 @@ func (r *Runner) modelInfoAt(index int) server.ModelInfo {
 		Model:    llmConfig.Model,
 		Display:  llmConfig.Name,
 	}
+}
+
+// normalizeSessionID 空白 / 空字符串 → eino.DefaultSessionID。
+func normalizeSessionID(sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return eino.DefaultSessionID
+	}
+	return sessionID
 }

@@ -1,8 +1,7 @@
-package app
+package runner
 
 import (
 	"testing"
-	"time"
 
 	"github.com/cloudwego/eino/schema"
 
@@ -48,17 +47,6 @@ func TestResolveStoredLLMIndexRejectsUnknownName(t *testing.T) {
 		LLMIndex: 1,
 	}); ok {
 		t.Fatalf("expected unknown name to fail, got index=%d", index)
-	}
-}
-
-func TestModelSelectionUserID(t *testing.T) {
-	t.Setenv("GORA_USER_ID", "env-user")
-	if got := ModelSelectionUserID(); got != "env-user" {
-		t.Fatalf("expected env user id, got %q", got)
-	}
-	t.Setenv("GORA_USER_ID", "")
-	if got := ModelSelectionUserID(); got != storage.LocalUserID {
-		t.Fatalf("expected fallback user id, got %q", got)
 	}
 }
 
@@ -121,28 +109,6 @@ func TestSchemaMessagesToChatMessages(t *testing.T) {
 	}
 }
 
-func TestShortTermMemoryTTL(t *testing.T) {
-	t.Parallel()
-
-	got, err := shortTermMemoryTTL("")
-	if err != nil {
-		t.Fatalf("shortTermMemoryTTL failed: %v", err)
-	}
-	if got != 24*time.Hour {
-		t.Fatalf("unexpected default ttl: %s", got)
-	}
-	got, err = shortTermMemoryTTL("30m")
-	if err != nil {
-		t.Fatalf("shortTermMemoryTTL failed: %v", err)
-	}
-	if got != 30*time.Minute {
-		t.Fatalf("unexpected ttl: %s", got)
-	}
-	if _, err := shortTermMemoryTTL("soon"); err == nil {
-		t.Fatal("expected invalid ttl to fail")
-	}
-}
-
 func TestNormalizeSessionID(t *testing.T) {
 	t.Parallel()
 
@@ -151,65 +117,6 @@ func TestNormalizeSessionID(t *testing.T) {
 	}
 	if got := normalizeSessionID(" session-a "); got != "session-a" {
 		t.Fatalf("expected trimmed session id, got %q", got)
-	}
-}
-
-func TestNormalizeAddr(t *testing.T) {
-	t.Parallel()
-
-	if got := normalizeAddr("8081"); got != ":8081" {
-		t.Fatalf("unexpected normalized addr: %q", got)
-	}
-	if got := normalizeAddr(" 0.0.0.0:9000 "); got != "0.0.0.0:9000" {
-		t.Fatalf("unexpected preserved addr: %q", got)
-	}
-	if got := normalizeAddr(""); got != ":8080" {
-		t.Fatalf("expected default :8080, got %q", got)
-	}
-}
-
-func TestApplyEnvOverridesUsesProviderEnvAPIKeys(t *testing.T) {
-	t.Setenv("DEEPSEEK_API_KEY", "sk-deepseek")
-	t.Setenv("OPENAI_API_KEY", "sk-openai")
-
-	cfg := appconfig.Config{
-		LLM: []appconfig.LLMConfig{
-			{Provider: "deepseek", Model: "deepseek-chat"},
-			{Provider: "openai", Model: "gpt-4o-mini"},
-		},
-	}
-
-	ApplyEnvOverrides(&cfg)
-
-	if cfg.LLM[0].APIKey != "sk-deepseek" {
-		t.Fatalf("unexpected deepseek api key: %q", cfg.LLM[0].APIKey)
-	}
-	if cfg.LLM[1].APIKey != "sk-openai" {
-		t.Fatalf("unexpected openai api key: %q", cfg.LLM[1].APIKey)
-	}
-}
-
-func TestApplyEnvOverridesUsesNestedRedisConfig(t *testing.T) {
-	t.Setenv("GORA_REDIS_ADDR", " 127.0.0.1:6379 ")
-	t.Setenv("GORA_REDIS_PASSWORD", " secret ")
-	t.Setenv("GORA_REDIS_DB", "2")
-	t.Setenv("GORA_SHORT_TERM_MEMORY_TTL", " 12h ")
-
-	cfg := appconfig.Config{}
-	ApplyEnvOverrides(&cfg)
-
-	redis := cfg.RedisSettings()
-	if redis.Addr != "127.0.0.1:6379" {
-		t.Fatalf("unexpected redis addr: %q", redis.Addr)
-	}
-	if redis.Password != "secret" {
-		t.Fatalf("unexpected redis password: %q", redis.Password)
-	}
-	if redis.DB != 2 {
-		t.Fatalf("unexpected redis db: %d", redis.DB)
-	}
-	if redis.ShortTermTTL != "12h" {
-		t.Fatalf("unexpected redis ttl: %q", redis.ShortTermTTL)
 	}
 }
 

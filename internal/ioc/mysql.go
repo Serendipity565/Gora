@@ -13,7 +13,7 @@ import (
 )
 
 // InitMysql 根据 cfg 初始化 MySQL 连接，并返回 *gorm.DB 实例。
-func InitMysql(cfg *config.MySQLConfig) *gorm.DB {
+func InitMysql(cfg config.MySQLConfig) *gorm.DB {
 	dsn := fmt.Sprintf("%s:%s@tcp(%s)/%s?charset=utf8&parseTime=true&loc=Local",
 		cfg.Username, cfg.Password, cfg.Addr, cfg.DBName)
 

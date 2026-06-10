@@ -8,73 +8,123 @@ package main
 
 import (
 	"context"
-
-	"github.com/Serendipity565/gora/internal/app"
+	"github.com/Serendipity565/gora/internal/agent/tool"
+	"github.com/Serendipity565/gora/internal/agent/tool/builtin"
 	"github.com/Serendipity565/gora/internal/config"
+	"github.com/Serendipity565/gora/internal/controller"
 	"github.com/Serendipity565/gora/internal/ioc"
-	middleware2 "github.com/Serendipity565/gora/internal/middleware"
-	"github.com/Serendipity565/gora/internal/server/middleware"
+	"github.com/Serendipity565/gora/internal/middleware"
+	"github.com/Serendipity565/gora/internal/repository/cache"
+	"github.com/Serendipity565/gora/internal/repository/dao"
+	"github.com/Serendipity565/gora/internal/router"
+	"github.com/Serendipity565/gora/internal/server"
+	"github.com/Serendipity565/gora/pkg/ijwt"
+	"gorm.io/gorm"
 )
 
 // Injectors from wire.go:
 
-// initInfra 装配运行 Gora 所需的基础设施依赖（工具注册表、MySQL、Redis、Logger、JWT、
-// Middleware Bundle 等）。
+// newApp 装配运行 Gora 所需的进程级依赖（基础设施 + middleware + 各业务 service / handler +
+// 路由引擎），打包成 *App 交给 main.go 启动。
 //
-// 与 main.go 同包（kratos 风格）：cmd/gora/main.go 直接调用，再把 *app.Infra 交给 app.Run。
 // 修改任何 ProviderSet 后必须执行 `make wire` 重新生成 cmd/gora/wire_gen.go。
-//
-// 返回的 cleanup 会按 wire 生成的反序依次释放底层资源；调用方应在拿到后立即 defer。
-func initInfra(ctx context.Context, cfg config.Config) (*app.Infra, func(), error) {
-	registry, err := ioc.NewToolRegistry()
+func newApp(ctx context.Context, cfg config.Config) (*App, func(), error) {
+	registry, err := provideToolRegistry()
 	if err != nil {
 		return nil, nil, err
 	}
-	databaseStore, cleanup, err := ioc.NewMySQL(ctx, cfg)
+	mySQLConfig := config.NewMysqlConfig(cfg)
+	db := ioc.InitMysql(mySQLConfig)
+	databaseStore, cleanup, err := provideDatabaseStore(ctx, db)
 	if err != nil {
 		return nil, nil, err
 	}
-	activeMemoryCache, cleanup2, err := ioc.NewRedis(ctx, cfg)
+	activeMemoryCache, cleanup2, err := provideActiveMemoryCache(ctx, cfg)
 	if err != nil {
 		cleanup()
 		return nil, nil, err
 	}
-	logger, cleanup3, err := ioc.NewLogger(cfg)
-	if err != nil {
-		cleanup2()
-		cleanup()
-		return nil, nil, err
+	logConfig := config.NewLogConfig(cfg)
+	logger := ioc.InitLogger(logConfig)
+	jwtConfig := config.NewJWTConfig(cfg)
+	jwt := ijwt.NewJWT(jwtConfig)
+	agentService := server.NewAgentService()
+	modelService := server.NewModelService()
+	v := dao.NewUserDAO(db)
+	userService := server.NewUserService(v)
+	corsConfig := config.NewCorsConfig(cfg)
+	corsMiddleware := middleware.NewCorsMiddleware(corsConfig)
+	authMiddleware := middleware.NewAuthMiddleware(jwt)
+	v2 := config.NewBasicAuthAccounts(cfg)
+	basicAuthMiddleware := middleware.NewBasicAuthMiddleware(v2)
+	loggerMiddleware := middleware.NewLoggerMiddleware(logger, logConfig)
+	limiterConfig := config.NewLimiterConfig(cfg)
+	redisConfig := config.NewRedisConfig(cfg)
+	client := ioc.InitRedis(redisConfig)
+	limitMiddleware := middleware.NewLimitMiddleware(limiterConfig, client)
+	userHandler := controller.NewUser(jwt, userService)
+	agentHandler := controller.NewAgent(agentService)
+	toolService := server.NewToolService(registry)
+	toolHandler := controller.NewTool(toolService)
+	modelHandler := controller.NewModel(modelService)
+	permissionService := server.NewPermissionService()
+	chatService := server.NewChatService(agentService, permissionService)
+	v3 := provideChatOptions()
+	chatHandler := controller.NewChat(chatService, permissionService, v3...)
+	healthHandler := controller.NewHealth()
+	engine := router.NewEngine(corsMiddleware, authMiddleware, basicAuthMiddleware, loggerMiddleware, limitMiddleware, userHandler, agentHandler, toolHandler, modelHandler, chatHandler, healthHandler)
+	app := &App{
+		Registry:     registry,
+		DB:           databaseStore,
+		Cache:        activeMemoryCache,
+		Logger:       logger,
+		JWT:          jwt,
+		AgentService: agentService,
+		ModelService: modelService,
+		UserService:  userService,
+		Router:       engine,
 	}
-	jwt := ioc.NewJWT(cfg)
-	handlerFunc := middleware.NewCorsHandler()
-	logConfig := middleware.ProvideLogConfig(cfg)
-	loggerMiddleware := middleware2.NewLoggerMiddleware(logger, logConfig)
-	v := middleware.ProvideBasicAuthAccounts(cfg)
-	basicAuthMiddleware := middleware2.NewBasicAuthMiddleware(v)
-	authMiddleware := middleware2.NewAuthMiddleware(jwt)
-	limiterConfig := middleware.ProvideLimiterConfig(cfg)
-	client, cleanup4, err := ioc.NewRedisClient(ctx, cfg)
-	if err != nil {
-		cleanup3()
-		cleanup2()
-		cleanup()
-		return nil, nil, err
-	}
-	limitMiddleware := middleware2.NewLimitMiddleware(limiterConfig, client)
-	prometheusMiddleware := middleware.NewPrometheusMiddleware()
-	bundle := middleware.NewBundle(handlerFunc, loggerMiddleware, basicAuthMiddleware, authMiddleware, limitMiddleware, prometheusMiddleware)
-	infra := &app.Infra{
-		Registry:    registry,
-		DB:          databaseStore,
-		Cache:       activeMemoryCache,
-		Logger:      logger,
-		JWT:         jwt,
-		Middlewares: bundle,
-	}
-	return infra, func() {
-		cleanup4()
-		cleanup3()
+	return app, func() {
 		cleanup2()
 		cleanup()
 	}, nil
+}
+
+// wire.go:
+
+// provideToolRegistry 创建一个内置工具注册表，并把 HTTP 工具注册进去。
+func provideToolRegistry() (*tool.Registry, error) {
+	r := tool.NewRegistry()
+	if err := r.Register(builtin.NewHTTPTool()); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+// provideDatabaseStore 把 *gorm.DB 包装成 repository.DatabaseStore（带 cleanup）。
+func provideDatabaseStore(ctx context.Context, db *gorm.DB) (dao.DatabaseStore, func(), error) {
+	store, err := dao.NewDatabaseStoreFromGorm(ctx, db)
+	if err != nil {
+		return nil, nil, err
+	}
+	cleanup := func() { _ = store.Close() }
+	return store, cleanup, nil
+}
+
+// provideActiveMemoryCache 根据 cfg.Database.Redis 创建短期记忆缓存；
+// 未配置 Redis 时退化为 NoopActiveMemoryCache（即不缓存，由数据库历史兜底）。
+func provideActiveMemoryCache(ctx context.Context, cfg config.Config) (cache.ActiveMemoryCache, func(), error) {
+	rs := cfg.Database.Redis
+	store, err := cache.OpenActiveMemoryCache(ctx, rs.Addr, rs.Password, rs.DB, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	cleanup := func() { _ = store.Close() }
+	return store, cleanup, nil
+}
+
+// provideChatOptions 返回空的 ChatHandler 选项切片。
+// controller.NewChat 的可选项目前没有从配置注入的需求；保留 hook 方便未来扩展。
+func provideChatOptions() []controller.ChatOption {
+	return nil
 }

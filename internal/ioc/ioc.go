@@ -12,7 +12,7 @@ import (
 
 // ProviderSet 暴露所有基础设施的初始化函数。 。
 var ProviderSet = wire.NewSet(
-	NewLogger,
+	InitLogger,
 	InitMysql,
 	InitRedis,
 )

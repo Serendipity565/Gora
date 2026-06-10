@@ -8,7 +8,7 @@ import (
 	"github.com/go-redis/redis/v8"
 )
 
-func InitRedis(conf *config.RedisConfig) *redis.Client {
+func InitRedis(conf config.RedisConfig) *redis.Client {
 	ctx := context.Background()
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     conf.Addr,

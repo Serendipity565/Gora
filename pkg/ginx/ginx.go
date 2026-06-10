@@ -1,10 +1,12 @@
 package ginx
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 
 	"github.com/Serendipity565/gora/api/response"
+	"github.com/Serendipity565/gora/pkg/errorx"
 	"github.com/Serendipity565/gora/pkg/ijwt"
 	"github.com/gin-gonic/gin"
 )

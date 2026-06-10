@@ -48,8 +48,8 @@ database:
 	if cfg.Agent.ID != "agent-1" {
 		t.Fatalf("unexpected agent id: %q", cfg.Agent.ID)
 	}
-	if cfg.Database.DSN() != "gora:gora_dev_password@tcp(localhost:3306)/gora?charset=utf8mb4&parseTime=True&loc=Local" {
-		t.Fatalf("unexpected database dsn: %q", cfg.Database.DSN())
+	if cfg.Database.MySQL.Addr != "localhost:3306" {
+		t.Fatalf("unexpected mysql addr: %q", cfg.Database.MySQL.Addr)
 	}
 }
 
@@ -78,83 +78,13 @@ llm:
 	}
 }
 
-func TestLoadRejectsMockProvider(t *testing.T) {
-	t.Parallel()
-
-	path := writeConfig(t, withAgentConfig(`
-llm:
-  - name: echo
-    provider: mock
-    api_key: sk-test
-    base_url: https://example.com/v1
-    model: echo
-`))
-
-	defer expectPanic(t)
-	_ = Load(path)
-}
-
-func TestLoadRequiresAPIKey(t *testing.T) {
-	t.Parallel()
-
-	path := writeConfig(t, withAgentConfig(`
-llm:
-  - provider: deepseek
-    base_url: https://api.deepseek.com
-    model: deepseek-chat
-`))
-
-	defer expectPanic(t)
-	_ = Load(path)
-}
-
-func TestLoadRequiresBaseURL(t *testing.T) {
-	t.Parallel()
-
-	path := writeConfig(t, withAgentConfig(`
-llm:
-  - provider: deepseek
-    api_key: sk-test
-    model: deepseek-chat
-`))
-
-	defer expectPanic(t)
-	_ = Load(path)
-}
-
-func TestReadBuildsDatabaseDSNFromMySQLConfig(t *testing.T) {
-	t.Parallel()
-
-	path := writeConfig(t, withAgentConfig(`
-llm:
-  - provider: deepseek
-    api_key: sk-test
-    base_url: https://api.deepseek.com
-    model: deepseek-chat
-database:
-  mysql:
-    addr: "  localhost:3306  "
-    dbname: "  gora  "
-    username: "  gora  "
-    password: "  gora_dev_password  "
-`))
-
-	cfg, err := Read(path)
-	if err != nil {
-		t.Fatalf("Read failed: %v", err)
-	}
-	want := "gora:gora_dev_password@tcp(localhost:3306)/gora?charset=utf8mb4&parseTime=True&loc=Local"
-	if cfg.Database.DSN() != want {
-		t.Fatalf("unexpected database dsn: %q", cfg.Database.DSN())
-	}
-}
-
 func TestReadRedisConfig(t *testing.T) {
 	t.Parallel()
 
 	path := writeConfig(t, withAgentConfig(`
 llm:
-  - provider: deepseek
+  - name: reasoner
+    provider: deepseek
     api_key: sk-test
     base_url: https://api.deepseek.com
     model: deepseek-chat
@@ -163,14 +93,13 @@ database:
     addr: "  localhost:6379  "
     password: "  secret  "
     db: 2
-    short_term_ttl: "  12h  "
 `))
 
 	cfg, err := Read(path)
 	if err != nil {
 		t.Fatalf("Read failed: %v", err)
 	}
-	redis := cfg.RedisSettings()
+	redis := cfg.Database.Redis
 	if redis.Addr != "localhost:6379" {
 		t.Fatalf("unexpected redis addr: %q", redis.Addr)
 	}
@@ -179,63 +108,6 @@ database:
 	}
 	if redis.DB != 2 {
 		t.Fatalf("unexpected redis db: %d", redis.DB)
-	}
-	if redis.ShortTermTTL != "12h" {
-		t.Fatalf("unexpected redis ttl: %q", redis.ShortTermTTL)
-	}
-}
-
-func TestReadLegacyRedisConfig(t *testing.T) {
-	t.Parallel()
-
-	path := writeConfig(t, withAgentConfig(`
-llm:
-  - provider: deepseek
-    api_key: sk-test
-    base_url: https://api.deepseek.com
-    model: deepseek-chat
-redis:
-  addr: localhost:6379
-  password: legacy
-  db: 1
-  short_term_ttl: 6h
-`))
-
-	cfg, err := Read(path)
-	if err != nil {
-		t.Fatalf("Read failed: %v", err)
-	}
-	redis := cfg.RedisSettings()
-	if redis.Password != "legacy" {
-		t.Fatalf("unexpected redis password: %q", redis.Password)
-	}
-	if redis.DB != 1 {
-		t.Fatalf("unexpected redis db: %d", redis.DB)
-	}
-	if redis.ShortTermTTL != "6h" {
-		t.Fatalf("unexpected redis ttl: %q", redis.ShortTermTTL)
-	}
-}
-
-func TestReadLeavesRedisTTLUnsetWhenOmitted(t *testing.T) {
-	t.Parallel()
-
-	path := writeConfig(t, withAgentConfig(`
-llm:
-  - provider: deepseek
-    api_key: sk-test
-    base_url: https://api.deepseek.com
-    model: deepseek-chat
-redis:
-  addr: localhost:6379
-`))
-
-	cfg, err := Read(path)
-	if err != nil {
-		t.Fatalf("Read failed: %v", err)
-	}
-	if cfg.RedisSettings().ShortTermTTL != "" {
-		t.Fatalf("unexpected redis ttl: %q", cfg.RedisSettings().ShortTermTTL)
 	}
 }
 
@@ -295,18 +167,6 @@ func TestValidateRejectsDuplicateLLMNames(t *testing.T) {
 
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected duplicate llm names to fail")
-	}
-}
-
-func TestValidateRejectsInvalidRedisTTL(t *testing.T) {
-	t.Parallel()
-
-	cfg := validConfig()
-	cfg.Redis.ShortTermTTL = "soon"
-	cfg.Database.Redis = cfg.Redis
-
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected invalid redis ttl to fail")
 	}
 }
 

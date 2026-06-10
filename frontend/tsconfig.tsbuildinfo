@@ -1,1 +1,1 @@
-{"root":["./src/api.ts","./src/main.ts","./src/types.ts","./src/ui.ts","./vite.config.ts"],"version":"5.9.3"}
+{"root":["./src/api.ts","./src/auth.ts","./src/main.ts","./src/types.ts","./src/ui.ts","./src/userapi.ts","./vite.config.ts"],"version":"5.9.3"}

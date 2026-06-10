@@ -19,6 +19,9 @@ type UserService interface {
 	GetByID(ctx context.Context, id uint64) (*domain.UserInfo, error)
 	// UpdateProfile 更新用户资料
 	UpdateProfile(ctx context.Context, user *domain.User) (*domain.UserInfo, error)
+	// EnsureAdmin 启动期 seed：如果 email 对应账号尚未存在则按 user 创建。
+	// 已存在则跳过（不会更新现有账号的密码 / 用户名）。
+	EnsureAdmin(ctx context.Context, user *domain.User) error
 }
 
 type userServiceImpl struct {
@@ -131,4 +134,37 @@ func toUserInfo(u *model.User) *domain.UserInfo {
 		Username: u.Username,
 		Status:   int(u.Status),
 	}
+}
+
+// EnsureAdmin 启动期 seed：若 email 对应账号不存在则按 user 创建；
+// 已存在则跳过——不会更新现有账号的密码 / 用户名，避免每次重启被覆盖。
+//
+// 三个字段中任意一个为空时直接返回 nil（视为"未配置 admin"）。
+func (s *userServiceImpl) EnsureAdmin(ctx context.Context, user *domain.User) error {
+	if user == nil {
+		return nil
+	}
+	if user.Email == "" || user.Password == "" || user.Username == "" {
+		return nil
+	}
+
+	existing, err := s.dao.FindOne(ctx, repository.ByEmail(user.Email))
+	if err != nil {
+		return err
+	}
+	if existing != nil {
+		return nil
+	}
+
+	hashed, err := bcrypt.GenerateFromPassword([]byte(user.Password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+
+	return s.dao.Create(ctx, &model.User{
+		Email:    user.Email,
+		Password: string(hashed),
+		Username: user.Username,
+		Status:   model.UserStatusActive,
+	})
 }

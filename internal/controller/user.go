@@ -19,14 +19,14 @@ type UserHandler interface {
 }
 
 type User struct {
-	jwtHandler *ijwt.JWT
-	s          server.UserService
+	jwt *ijwt.JWT
+	s   server.UserService
 }
 
-func NewUser(jwtHandler *ijwt.JWT, s server.UserService) UserHandler {
+func NewUser(jwt *ijwt.JWT, s server.UserService) UserHandler {
 	return &User{
-		jwtHandler: jwtHandler,
-		s:          s,
+		jwt: jwt,
+		s:   s,
 	}
 }
 
@@ -43,8 +43,8 @@ func NewUser(jwtHandler *ijwt.JWT, s server.UserService) UserHandler {
 //	@Failure		400		{object}	response.Response									"请求参数错误 / 邮箱已被使用"
 //	@Failure		500		{object}	response.Response									"服务器错误"
 //	@Router			/api/user/register [post]
-func (s *User) Register(c *gin.Context, req request.RegisterRequest) (response.Response, error) {
-	info, err := s.s.Register(c.Request.Context(), &domain.User{
+func (h *User) Register(c *gin.Context, req request.RegisterRequest) (response.Response, error) {
+	info, err := h.s.Register(c.Request.Context(), &domain.User{
 		Email:    req.Email,
 		Password: req.Password,
 		Username: req.Username,
@@ -55,7 +55,7 @@ func (s *User) Register(c *gin.Context, req request.RegisterRequest) (response.R
 
 	return response.Response{
 		Code:    0,
-		Message: "注册成功",
+		Message: "success",
 		Data: response.RegisterResponse{
 			User: toUserInfoResponse(info),
 		},
@@ -77,8 +77,8 @@ func (s *User) Register(c *gin.Context, req request.RegisterRequest) (response.R
 //	@Failure		403		{object}	response.Response								"账号已被禁用"
 //	@Failure		404		{object}	response.Response								"用户不存在"
 //	@Router			/api/user/login [post]
-func (s *User) Login(c *gin.Context, req request.LoginRequest) (response.Response, error) {
-	info, err := s.s.Login(c.Request.Context(), &domain.User{
+func (h *User) Login(c *gin.Context, req request.LoginRequest) (response.Response, error) {
+	info, err := h.s.Login(c.Request.Context(), &domain.User{
 		Email:    req.Email,
 		Password: req.Password,
 	})
@@ -86,14 +86,16 @@ func (s *User) Login(c *gin.Context, req request.LoginRequest) (response.Respons
 		return response.Response{}, err
 	}
 
-	token, err := s.jwtHandler.SetJWTToken(strconv.FormatUint(info.ID, 10), info.Email)
+	token, err := h.jwt.SetJWTToken(strconv.FormatUint(info.ID, 10), info.Email)
 	if err != nil {
 		return response.Response{}, errs.InternalServerError(err)
 	}
 
+	c.Header("Authorization", token)
+
 	return response.Response{
 		Code:    0,
-		Message: "登录成功",
+		Message: "success",
 		Data: response.LoginResponse{
 			Token: token,
 			User:  toUserInfoResponse(info),
@@ -117,13 +119,13 @@ func (s *User) Login(c *gin.Context, req request.LoginRequest) (response.Respons
 //	@Failure		404				{object}	response.Response									"用户不存在"
 //	@Failure		500				{object}	response.Response									"服务器错误"
 //	@Router			/api/user/profile [post]
-func (s *User) UpdateProfile(c *gin.Context, req request.UpdateProfileRequest, uc ijwt.UserClaims) (response.Response, error) {
+func (h *User) UpdateProfile(c *gin.Context, req request.UpdateProfileRequest, uc ijwt.UserClaims) (response.Response, error) {
 	id, err := strconv.ParseUint(uc.UserId, 10, 64)
 	if err != nil {
 		return response.Response{}, errs.ErrUserNotFound(err)
 	}
 
-	info, err := s.s.UpdateProfile(c.Request.Context(), &domain.User{
+	info, err := h.s.UpdateProfile(c.Request.Context(), &domain.User{
 		ID:       uint(id),
 		Username: req.Username,
 		Password: req.Password,
@@ -134,7 +136,7 @@ func (s *User) UpdateProfile(c *gin.Context, req request.UpdateProfileRequest, u
 
 	return response.Response{
 		Code:    0,
-		Message: "更新成功",
+		Message: "success",
 		Data: response.UpdateProfileResponse{
 			User: toUserInfoResponse(info),
 		},

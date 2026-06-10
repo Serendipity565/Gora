@@ -2,6 +2,7 @@ package dao
 
 import (
 	"context"
+	"errors"
 
 	"github.com/Serendipity565/gora/internal/repository/model"
 	"gorm.io/gorm"
@@ -56,7 +57,10 @@ func (u *userDAO) Update(ctx context.Context, user *model.User) error {
 }
 
 // FindOne 根据条件查询单个用户；条件可选，支持 ByID、ByEmail。
-// 必须至少提供一个有效条件，否则返回 gorm.ErrRecordNotFound。
+//
+// 没有任何条件时直接返回 (nil, nil)，避免误读全表第一行；
+// 命中条件但记录不存在时也返回 (nil, nil)，把"不存在"与"出错"区分开，
+// service 层以 "user == nil" 判定不存在即可，不必再 errors.Is。
 func (u *userDAO) FindOne(ctx context.Context, opts ...QueryOption) (*model.User, error) {
 	cfg := &queryConfig{}
 	for _, opt := range opts {
@@ -74,12 +78,14 @@ func (u *userDAO) FindOne(ctx context.Context, opts ...QueryOption) (*model.User
 		hasCond = true
 	}
 	if !hasCond {
-		return nil, gorm.ErrRecordNotFound
+		return nil, nil
 	}
 
 	var user model.User
-	err := query.First(&user).Error
-	if err != nil {
+	if err := query.First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	return &user, nil

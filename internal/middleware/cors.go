@@ -15,7 +15,7 @@ type CorsMiddleware struct {
 	allowedHeaders []string
 }
 
-func NewCorsMiddleware(cfg *config.CorsConfig) *CorsMiddleware {
+func NewCorsMiddleware(cfg config.CorsConfig) *CorsMiddleware {
 	return &CorsMiddleware{
 		allowedOrigins: cfg.AllowedOrigins,
 		allowedMethods: cfg.AllowedMethods,

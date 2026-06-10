@@ -1,17 +1,19 @@
 package config
 
 import (
-	"fmt"
-
 	"github.com/google/wire"
-	"github.com/spf13/viper"
 )
 
 // DefaultPath 是 Gora CLI 默认读取的配置文件路径。
 const DefaultPath = "configs/config.yaml"
 
+// ProviderSet 把 Config 拆成各子配置，便于 wire 在不重复读 yaml 的前提下注入。
+//
+// 注意：不包含 NewConfig —— 应用入口（cmd/gora/main.go）一般会自己读 yaml 后把
+// Config 作为入参传给 wire 注入器，避免 wire 多次读盘。如果调用方只想要"读 yaml +
+// 拆子配置"的全套，请用 ProviderSetWithLoader。
 var ProviderSet = wire.NewSet(
-	NewConfig,
+	NewServerConfig,
 	NewLLMConfigs,
 	NewAgentConfig,
 	NewMysqlConfig,
@@ -21,14 +23,32 @@ var ProviderSet = wire.NewSet(
 	NewLimiterConfig,
 	NewLogConfig,
 	NewCorsConfig,
+	NewAdminConfig,
+)
+
+// ProviderSetWithLoader 在 ProviderSet 之上额外暴露 NewConfig，用于完全把
+// 配置加载交给 wire 的场景（例如脚本 / 测试）。
+var ProviderSetWithLoader = wire.NewSet(
+	NewConfig,
+	ProviderSet,
 )
 
 // Config 是应用启动配置。
 type Config struct {
+	Server     ServerConfig     `mapstructure:"server" yaml:"server"`
 	LLM        []LLMConfig      `mapstructure:"llm" yaml:"llm"`
 	Agent      AgentConfig      `mapstructure:"agent" yaml:"agent"`
 	Database   DatabaseConfig   `mapstructure:"database" yaml:"database"`
 	Middleware MiddlewareConfig `mapstructure:"middleware" yaml:"middleware"`
+	Admin      AdminConfig      `mapstructure:"admin" yaml:"admin"`
+}
+
+// ServerConfig 控制 HTTP 服务器自身的运行时参数。
+type ServerConfig struct {
+	// Addr HTTP 监听地址，例如 ":8080"；空时默认 ":8080"。
+	Addr string `mapstructure:"addr" yaml:"addr"`
+	// CORS 是否启用 CORS 中间件（前端独立 dev server 跨域时用）。
+	CORS bool `mapstructure:"cors" yaml:"cors"`
 }
 
 // MiddlewareConfig 聚合所有 Gin 中间件的可调参数。
@@ -61,12 +81,28 @@ type LimiterConfig struct {
 	Quantum      int `mapstructure:"quantum" yaml:"quantum"`
 }
 
-// LogConfig 控制访问日志中间件。
+// LogConfig 控制访问日志中间件 + zap 文件轮转。
+//
+// 字段拆成两类：
+//   - Level / SkipPaths：访问日志中间件用；
+//   - File / MaxSize / MaxBackups / MaxAge / Compress：底层 zap + lumberjack 切割用，
+//     与 ioc.InitLogger 一一对应。
 type LogConfig struct {
 	// Level 取值 debug / info / warn / error；空字符串视为 info。
 	Level string `mapstructure:"level" yaml:"level"`
 	// SkipPaths 列出不写访问日志的路径前缀（精确匹配）。
 	SkipPaths []string `mapstructure:"skip_paths" yaml:"skip_paths"`
+
+	// File 日志文件路径；空时 lumberjack 会落到默认 ./<bin>.log。
+	File string `mapstructure:"file" yaml:"file"`
+	// MaxSize 单个文件触发切割的大小（MB）。
+	MaxSize int `mapstructure:"max_size" yaml:"max_size"`
+	// MaxBackups 保留旧文件的最大个数。
+	MaxBackups int `mapstructure:"max_backups" yaml:"max_backups"`
+	// MaxAge 保留旧文件的最大天数。
+	MaxAge int `mapstructure:"max_age" yaml:"max_age"`
+	// Compress 是否压缩旧文件。
+	Compress bool `mapstructure:"compress" yaml:"compress"`
 }
 
 // CorsConfig 是跨域资源共享中间件配置。
@@ -99,6 +135,21 @@ type AgentConfig struct {
 	Instruction         string `mapstructure:"instruction" yaml:"instruction"`
 	MaxHistoryMessages  int    `mapstructure:"max_history_messages" yaml:"max_history_messages"`
 	MaxStreamChunkRunes int    `mapstructure:"max_stream_chunk_runes" yaml:"max_stream_chunk_runes"`
+
+	// UserID 模型选择 / 历史消息持久化用的 user_id。空时使用 repository.LocalUserID（"local"）。
+	UserID string `mapstructure:"user_id" yaml:"user_id"`
+}
+
+// AdminConfig 是启动期 seed 的内置管理员账号；所有字段非空时该账号才会被插入。
+//
+// 启动顺序：
+//  1. AutoMigrate user 表（dao.NewUserDAO 会做）；
+//  2. 按 Email 查找；
+//  3. 不存在则用 bcrypt 加密 Password 后插入；存在则跳过（不更新密码）。
+type AdminConfig struct {
+	Email    string `mapstructure:"email" yaml:"email"`
+	Password string `mapstructure:"password" yaml:"password"`
+	Username string `mapstructure:"username" yaml:"username"`
 }
 
 // DatabaseConfig 是持久化存储配置。
@@ -126,25 +177,19 @@ type RedisConfig struct {
 	DB       int    `mapstructure:"db" yaml:"db"`
 }
 
+// NewConfig 从默认路径加载配置，校验失败直接 panic。
+//
+// 仅用于"完全交给 wire 装配"的场景；正常应用入口请走 Read + Validate，自行处理错误。
 func NewConfig() Config {
-	path := DefaultPath
-	v := viper.New()
-	v.SetConfigFile(path)
-
-	if err := v.ReadInConfig(); err != nil {
-		panic(fmt.Errorf("读取配置文件 %s 失败: %w", path, err))
-	}
-
-	var cfg Config
-	if err := v.Unmarshal(&cfg); err != nil {
-		panic(fmt.Errorf("解析配置文件 %s 失败: %w", path, err))
-	}
-
-	return cfg
+	return Load(DefaultPath)
 }
 
 func NewLLMConfigs(cfg Config) []LLMConfig {
 	return cfg.LLM
+}
+
+func NewServerConfig(cfg Config) ServerConfig {
+	return cfg.Server
 }
 
 func NewAgentConfig(cfg Config) AgentConfig {
@@ -177,4 +222,8 @@ func NewLogConfig(cfg Config) LogConfig {
 
 func NewCorsConfig(cfg Config) CorsConfig {
 	return cfg.Middleware.Cors
+}
+
+func NewAdminConfig(cfg Config) AdminConfig {
+	return cfg.Admin
 }

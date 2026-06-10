@@ -1,11 +1,10 @@
-package app
+package runner
 
 import (
 	"context"
 	"fmt"
 	"io"
 	"strings"
-	"time"
 
 	"github.com/cloudwego/eino/schema"
 
@@ -17,8 +16,6 @@ import (
 )
 
 // historyCarrier 抽象出"能快照 / 恢复多 session 历史"的 Agent。
-//
-// EinoAgent 实现了它；存在这个接口主要是为了让历史读写助手不直接耦合 EinoAgent。
 type historyCarrier interface {
 	RestoreHistories(map[string][]*schema.Message)
 	SnapshotHistories() map[string][]*schema.Message
@@ -58,10 +55,8 @@ func buildChatAgent(
 	return chatAgent, nil
 }
 
-// restoreModelSelection 从 modelStore 读出 (user, agent, session) 之前选择的 LLM 索引。
-//
-// 任何错误（包括读取失败 / 命中已不存在的模型）都会以 "回落到默认 0" 处理，
-// 但会把诊断信息写到 errOut 提示用户。
+// restoreModelSelection 从 modelStore 读出 (user, agent, session) 之前选择的 LLM 索引；
+// 失败时回落到默认 0 并把诊断写到 errOut。
 func restoreModelSelection(
 	ctx context.Context,
 	out, errOut io.Writer,
@@ -121,7 +116,6 @@ func saveModelSelection(
 // resolveStoredLLMIndex 把存储中读到的 ModelSelection 翻译成当前 cfg.LLM 的下标。
 //
 // 唯一依据是 selection.LLMName —— 项目约定 name 是模型的唯一标识。
-// 历史遗留的 Model / LLMIndex 字段已不参与查找，它们仅作为读时的诊断信息。
 func resolveStoredLLMIndex(cfg appconfig.Config, selection storage.ModelSelection) (int, bool) {
 	name := strings.TrimSpace(selection.LLMName)
 	if name == "" {
@@ -311,16 +305,4 @@ func trimChatMessages(messages []storage.ChatMessage, max int) []storage.ChatMes
 		return messages
 	}
 	return append([]storage.ChatMessage(nil), messages[len(messages)-max:]...)
-}
-
-// shortTermTTLOrFallback 用于 Run 在装配时计算短期记忆 TTL；这里复用 options.go 的解析。
-//
-// 之所以单独包一层，是想让 Run 内部少一行 if-err 噪音。
-func shortTermTTLOrFallback(raw string, errOut io.Writer) time.Duration {
-	ttl, err := shortTermMemoryTTL(raw)
-	if err != nil {
-		fmt.Fprintf(errOut, "短期记忆 TTL 配置无效，将使用 24h: %v\n", err)
-		return 24 * time.Hour
-	}
-	return ttl
 }

@@ -1,59 +1,108 @@
 package controller
 
 import (
-	"net/http"
+	"errors"
 	"strings"
 
 	"github.com/Serendipity565/gora/api/request"
+	"github.com/Serendipity565/gora/api/response"
+	"github.com/Serendipity565/gora/internal/errs"
+	"github.com/Serendipity565/gora/internal/server"
 	"github.com/gin-gonic/gin"
 )
 
-// HandleListModels 列出当前配置中所有可选模型。
-func (h *Handler) HandleListModels(c *gin.Context) {
-	if h.modelSelector == nil {
-		c.JSON(http.StatusNotImplemented, gin.H{"error": "model selector not configured"})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"models": h.modelSelector.ListModels()})
+// ModelHandler 暴露 /api/models 路由组。
+type ModelHandler interface {
+	List(c *gin.Context) (response.Response, error)
+	Current(c *gin.Context) (response.Response, error)
+	Select(c *gin.Context, req request.ModelSelect) (response.Response, error)
 }
 
-// HandleGetCurrentModel 返回某会话当前使用的模型。
-// session_id 通过 query 传入；为空表示默认会话。
-func (h *Handler) HandleGetCurrentModel(c *gin.Context) {
-	if h.modelSelector == nil {
-		c.JSON(http.StatusNotImplemented, gin.H{"error": "model selector not configured"})
-		return
-	}
+type Model struct {
+	s server.ModelService
+}
 
+func NewModel(s server.ModelService) ModelHandler {
+	return &Model{s: s}
+}
+
+// List 列出当前配置中所有可选模型。
+//
+//	@Summary		列出可选模型
+//	@Tags			Model
+//	@ID				listModels
+//	@Produce		json
+//	@Success		200	{object}	response.Response
+//	@Failure		501	{object}	response.Response	"未配置 ModelSelector"
+//	@Router			/api/models [get]
+func (h *Model) List(c *gin.Context) (response.Response, error) {
+	models, err := h.s.List()
+	if err != nil {
+		return response.Response{}, mapModelError(err)
+	}
+	return response.Response{
+		Code:    0,
+		Message: "success",
+		Data:    gin.H{"models": models},
+	}, nil
+}
+
+// Current 返回某 session 当前使用的模型。
+//
+//	@Summary		查询当前模型
+//	@Description	session_id 通过 query 传入；为空表示默认会话
+//	@Tags			Model
+//	@ID				getCurrentModel
+//	@Produce		json
+//	@Param			session_id	query		string	false	"会话 ID"
+//	@Success		200			{object}	response.Response
+//	@Failure		501			{object}	response.Response	"未配置 ModelSelector"
+//	@Router			/api/models/current [get]
+func (h *Model) Current(c *gin.Context) (response.Response, error) {
 	sessionID := strings.TrimSpace(c.Query("session_id"))
-	info, explicit, err := h.modelSelector.CurrentModel(c.Request.Context(), sessionID)
+	info, explicit, err := h.s.Current(c.Request.Context(), sessionID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		return response.Response{}, mapModelError(err)
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"model":    info,
-		"explicit": explicit,
-	})
+	return response.Response{
+		Code:    0,
+		Message: "success",
+		Data: gin.H{
+			"model":    info,
+			"explicit": explicit,
+		},
+	}, nil
 }
 
-// HandleSelectModel 设置某会话使用的模型。
-func (h *Handler) HandleSelectModel(c *gin.Context) {
-	if h.modelSelector == nil {
-		c.JSON(http.StatusNotImplemented, gin.H{"error": "model selector not configured"})
-		return
-	}
-
-	var req request.ModelSelect
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	info, err := h.modelSelector.SelectModel(c.Request.Context(), strings.TrimSpace(req.SessionID), strings.TrimSpace(req.Selector))
+// Select 设置某 session 使用的模型。
+//
+//	@Summary		选择模型
+//	@Tags			Model
+//	@ID				selectModel
+//	@Accept			json
+//	@Produce		json
+//	@Param			request	body		request.ModelSelect	true	"模型选择请求"
+//	@Success		200		{object}	response.Response
+//	@Failure		400		{object}	response.Response
+//	@Failure		501		{object}	response.Response	"未配置 ModelSelector"
+//	@Router			/api/models/select [post]
+func (h *Model) Select(c *gin.Context, req request.ModelSelect) (response.Response, error) {
+	info, err := h.s.Select(c.Request.Context(), strings.TrimSpace(req.SessionID), strings.TrimSpace(req.Selector))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
+		return response.Response{}, mapModelError(err)
 	}
-	c.JSON(http.StatusOK, gin.H{"model": info})
+	return response.Response{
+		Code:    0,
+		Message: "success",
+		Data:    gin.H{"model": info},
+	}, nil
+}
+
+// mapModelError 把 server 层错误映射成统一的对外 errs。
+func mapModelError(err error) error {
+	var notConfigured server.ErrModelSelectorNotConfigured
+	if errors.As(err, &notConfigured) {
+		return errs.ErrModelSelectorNotConfigured(err)
+	}
+	return errs.ErrModelInvalid(err)
 }
