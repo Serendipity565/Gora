@@ -205,7 +205,7 @@ func (r *Runner) ListModels() []server.ModelInfo {
 		models = append(models, server.ModelInfo{
 			Index:    index,
 			Name:     llmConfig.Name,
-			Provider: llmConfig.Provider,
+			APIStyle: llmConfig.APIStyle,
 			Model:    llmConfig.Model,
 			Display:  llmConfig.Name,
 		})
@@ -257,7 +257,7 @@ func (r *Runner) modelInfoAt(index int) server.ModelInfo {
 	return server.ModelInfo{
 		Index:    index,
 		Name:     llmConfig.Name,
-		Provider: llmConfig.Provider,
+		APIStyle: llmConfig.APIStyle,
 		Model:    llmConfig.Model,
 		Display:  llmConfig.Name,
 	}

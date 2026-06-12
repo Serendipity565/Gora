@@ -13,7 +13,7 @@ func TestLoad(t *testing.T) {
 	path := writeConfig(t, withAgentConfig(`
 llm:
   - name: reasoner
-    provider: deepseek
+    api_style: openai
     api_key: "  sk-test  "
     base_url: "  https://api.deepseek.com  "
     model: "  deepseek-reasoner  "
@@ -33,8 +33,8 @@ database:
 	if cfg.LLM[0].Name != "reasoner" {
 		t.Fatalf("unexpected name: %q", cfg.LLM[0].Name)
 	}
-	if cfg.LLM[0].Provider != "deepseek" {
-		t.Fatalf("unexpected provider: %q", cfg.LLM[0].Provider)
+	if cfg.LLM[0].APIStyle != "openai" {
+		t.Fatalf("unexpected api_style: %q", cfg.LLM[0].APIStyle)
 	}
 	if cfg.LLM[0].APIKey != "sk-test" {
 		t.Fatalf("unexpected api key: %q", cfg.LLM[0].APIKey)
@@ -53,13 +53,13 @@ database:
 	}
 }
 
-func TestLoadSupportsOpenAIProvider(t *testing.T) {
+func TestLoadSupportsOpenAIAPIStyle(t *testing.T) {
 	t.Parallel()
 
 	path := writeConfig(t, withAgentConfig(`
 llm:
   - name: gpt-mini
-    provider: openai
+    api_style: openai
     api_key: sk-openai
     base_url: https://api.openai.com/v1
     model: gpt-4o-mini
@@ -67,8 +67,8 @@ llm:
 
 	cfg := Load(path)
 
-	if cfg.LLM[0].Provider != "openai" {
-		t.Fatalf("unexpected provider: %q", cfg.LLM[0].Provider)
+	if cfg.LLM[0].APIStyle != "openai" {
+		t.Fatalf("unexpected api_style: %q", cfg.LLM[0].APIStyle)
 	}
 	if cfg.LLM[0].BaseURL != "https://api.openai.com/v1" {
 		t.Fatalf("unexpected base url: %q", cfg.LLM[0].BaseURL)
@@ -84,7 +84,7 @@ func TestReadRedisConfig(t *testing.T) {
 	path := writeConfig(t, withAgentConfig(`
 llm:
   - name: reasoner
-    provider: deepseek
+    api_style: openai
     api_key: sk-test
     base_url: https://api.deepseek.com
     model: deepseek-chat
@@ -116,8 +116,8 @@ func TestFindLLM(t *testing.T) {
 
 	cfg := Config{
 		LLM: []LLMConfig{
-			{Name: "chat", Provider: "deepseek", Model: "deepseek-chat", APIKey: "sk-1", BaseURL: "https://api.deepseek.com"},
-			{Name: "reasoner", Provider: "deepseek", Model: "deepseek-reasoner", APIKey: "sk-2", BaseURL: "https://api.deepseek.com"},
+			{Name: "chat", APIStyle: "openai", Model: "deepseek-chat", APIKey: "sk-1", BaseURL: "https://api.deepseek.com"},
+			{Name: "reasoner", APIStyle: "openai", Model: "deepseek-reasoner", APIKey: "sk-2", BaseURL: "https://api.deepseek.com"},
 		},
 	}
 
@@ -161,8 +161,8 @@ func TestValidateRejectsDuplicateLLMNames(t *testing.T) {
 
 	cfg := validConfig()
 	cfg.LLM = []LLMConfig{
-		{Name: "chat", Provider: "deepseek", Model: "deepseek-chat", APIKey: "sk-1", BaseURL: "https://api.deepseek.com"},
-		{Name: "CHAT", Provider: "deepseek", Model: "deepseek-reasoner", APIKey: "sk-2", BaseURL: "https://api.deepseek.com"},
+		{Name: "chat", APIStyle: "openai", Model: "deepseek-chat", APIKey: "sk-1", BaseURL: "https://api.deepseek.com"},
+		{Name: "CHAT", APIStyle: "openai", Model: "deepseek-reasoner", APIKey: "sk-2", BaseURL: "https://api.deepseek.com"},
 	}
 
 	if err := cfg.Validate(); err == nil {
@@ -181,7 +181,7 @@ func TestLoadPanicsOnInvalidConfig(t *testing.T) {
 
 func validConfig() Config {
 	return Config{
-		LLM: []LLMConfig{{Name: "chat", Provider: "deepseek", Model: "deepseek-chat", APIKey: "sk-test", BaseURL: "https://api.deepseek.com"}},
+		LLM: []LLMConfig{{Name: "chat", APIStyle: "openai", Model: "deepseek-chat", APIKey: "sk-test", BaseURL: "https://api.deepseek.com"}},
 		Agent: AgentConfig{
 			ID:                  "agent-1",
 			Name:                "gora-eino-agent",

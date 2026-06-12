@@ -12,7 +12,7 @@ import (
 
 // ChatModelConfig 是 Gora 使用的统一模型配置。
 type ChatModelConfig struct {
-	Provider string
+	APIStyle string
 	APIKey   string
 	BaseURL  string
 	Model    string

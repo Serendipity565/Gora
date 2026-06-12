@@ -121,7 +121,7 @@ type CorsConfig struct {
 //     不参与任何 selector / 展示逻辑。
 type LLMConfig struct {
 	Name     string `mapstructure:"name" yaml:"name"`
-	Provider string `mapstructure:"provider" yaml:"provider"`
+	APIStyle string `mapstructure:"api_style" yaml:"api_style"`
 	APIKey   string `mapstructure:"api_key" yaml:"api_key"`
 	BaseURL  string `mapstructure:"base_url" yaml:"base_url"`
 	Model    string `mapstructure:"model" yaml:"model"`

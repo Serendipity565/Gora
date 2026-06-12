@@ -30,7 +30,7 @@ type ToolInfo struct {
 type ModelInfo struct {
 	Index    int    `json:"index"`
 	Name     string `json:"name,omitempty"`
-	Provider string `json:"provider,omitempty"`
+	APIStyle string `json:"api_style,omitempty"`
 	Model    string `json:"model"`
 	Display  string `json:"display"`
 }

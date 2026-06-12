@@ -71,7 +71,7 @@ func (c Config) Validate() error {
 func (c *Config) normalize() {
 	for i := range c.LLM {
 		c.LLM[i].Name = strings.TrimSpace(c.LLM[i].Name)
-		c.LLM[i].Provider = normalizeProvider(c.LLM[i].Provider)
+		c.LLM[i].APIStyle = normalizeAPIStyle(c.LLM[i].APIStyle)
 		c.LLM[i].APIKey = strings.TrimSpace(c.LLM[i].APIKey)
 		c.LLM[i].BaseURL = strings.TrimSpace(c.LLM[i].BaseURL)
 		c.LLM[i].Model = strings.TrimSpace(c.LLM[i].Model)
@@ -118,7 +118,7 @@ func (c LLMConfig) DisplayName(index int) string {
 // ChatModelConfig 转换为 LLM 层使用的模型配置。
 func (c LLMConfig) ChatModelConfig() llm.ChatModelConfig {
 	return llm.ChatModelConfig{
-		Provider: normalizeProvider(c.Provider),
+		APIStyle: normalizeAPIStyle(c.APIStyle),
 		APIKey:   strings.TrimSpace(c.APIKey),
 		BaseURL:  strings.TrimSpace(c.BaseURL),
 		Model:    strings.TrimSpace(c.Model),
@@ -140,8 +140,8 @@ func (c RedisConfig) HasSettings() bool {
 		c.DB != 0
 }
 
-func normalizeProvider(provider string) string {
-	return strings.ToLower(strings.TrimSpace(provider))
+func normalizeAPIStyle(style string) string {
+	return strings.ToLower(strings.TrimSpace(style))
 }
 
 func validateDuplicateLLMNames(configs []LLMConfig) error {

@@ -3,15 +3,16 @@ server:
   addr: ":8080"  # 监听地址；空时默认 :8080
   cors: true     # 是否启用 CORS 中间件（前端独立 dev server 跨域时建议开）
 
-# LLM 配置：支持多个 OpenAI 兼容的语言模型（provider 支持 openai / deepseek 等）
+# LLM 配置：支持多个模型服务
+# api_style 表示 API 风格：openai（OpenAI 兼容接口）或 anthropic（Anthropic 原生接口）
 llm:
   - name: "chat"
-    provider: deepseek
+    api_style: openai
     api_key: "sk-your-api-key"
     base_url: "https://api.deepseek.com"
     model: "deepseek-chat"
   - name: "gpt-4o-mini"
-    provider: openai
+    api_style: openai
     api_key: "your-api-key"
     base_url: "https://api.openai.com/v1"
     model: "gpt-4o-mini"
