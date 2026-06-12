@@ -1,4 +1,4 @@
-package config
+package configs
 
 import (
 	"errors"
@@ -28,7 +28,6 @@ func Read(path string) (Config, error) {
 		return Config{}, fmt.Errorf("解析配置文件 %s 失败: %w", path, err)
 	}
 
-	cfg.normalize()
 	return cfg, nil
 }
 
@@ -47,7 +46,7 @@ func Load(path string) Config {
 }
 
 // Validate 校验当前配置是否足以启动应用。
-func (c Config) Validate() error {
+func (c *Config) Validate() error {
 	if len(c.LLM) == 0 {
 		return errors.New("config.llm 至少需要配置一项")
 	}
@@ -68,33 +67,10 @@ func (c Config) Validate() error {
 	return nil
 }
 
-func (c *Config) normalize() {
-	for i := range c.LLM {
-		c.LLM[i].Name = strings.TrimSpace(c.LLM[i].Name)
-		c.LLM[i].APIStyle = normalizeAPIStyle(c.LLM[i].APIStyle)
-		c.LLM[i].APIKey = strings.TrimSpace(c.LLM[i].APIKey)
-		c.LLM[i].BaseURL = strings.TrimSpace(c.LLM[i].BaseURL)
-		c.LLM[i].Model = strings.TrimSpace(c.LLM[i].Model)
-	}
-
-	c.Agent.ID = strings.TrimSpace(c.Agent.ID)
-	c.Agent.Name = strings.TrimSpace(c.Agent.Name)
-	c.Agent.Description = strings.TrimSpace(c.Agent.Description)
-	c.Agent.Instruction = strings.TrimSpace(c.Agent.Instruction)
-
-	c.Database.MySQL.Addr = strings.TrimSpace(c.Database.MySQL.Addr)
-	c.Database.MySQL.DBName = strings.TrimSpace(c.Database.MySQL.DBName)
-	c.Database.MySQL.Username = strings.TrimSpace(c.Database.MySQL.Username)
-	c.Database.MySQL.Password = strings.TrimSpace(c.Database.MySQL.Password)
-
-	c.Database.Redis.Addr = strings.TrimSpace(c.Database.Redis.Addr)
-	c.Database.Redis.Password = strings.TrimSpace(c.Database.Redis.Password)
-}
-
 // FindLLM 按 LLMConfig.Name 查找目标模型。
 //
 // 项目约定：name 是项目内模型的唯一标识；不再支持按序号 / model 字符串查找。
-func (c Config) FindLLM(name string) (int, LLMConfig, error) {
+func (c *Config) FindLLM(name string) (int, LLMConfig, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return 0, LLMConfig{}, fmt.Errorf("模型 name 不能为空")
@@ -108,7 +84,7 @@ func (c Config) FindLLM(name string) (int, LLMConfig, error) {
 }
 
 // DisplayName 返回展示用名称（与 Name 等价；index 仅作兜底）。
-func (c LLMConfig) DisplayName(index int) string {
+func (c *LLMConfig) DisplayName(index int) string {
 	if name := strings.TrimSpace(c.Name); name != "" {
 		return name
 	}
@@ -116,7 +92,7 @@ func (c LLMConfig) DisplayName(index int) string {
 }
 
 // ChatModelConfig 转换为 LLM 层使用的模型配置。
-func (c LLMConfig) ChatModelConfig() llm.ChatModelConfig {
+func (c *LLMConfig) ChatModelConfig() llm.ChatModelConfig {
 	return llm.ChatModelConfig{
 		APIStyle: normalizeAPIStyle(c.APIStyle),
 		APIKey:   strings.TrimSpace(c.APIKey),
@@ -126,7 +102,7 @@ func (c LLMConfig) ChatModelConfig() llm.ChatModelConfig {
 }
 
 // HasSettings 判断 MySQL 结构化配置是否被设置。
-func (c MySQLConfig) HasSettings() bool {
+func (c *MySQLConfig) HasSettings() bool {
 	return strings.TrimSpace(c.Addr) != "" ||
 		strings.TrimSpace(c.DBName) != "" ||
 		strings.TrimSpace(c.Username) != "" ||
@@ -134,7 +110,7 @@ func (c MySQLConfig) HasSettings() bool {
 }
 
 // HasSettings 判断 Redis 配置是否被显式设置。
-func (c RedisConfig) HasSettings() bool {
+func (c *RedisConfig) HasSettings() bool {
 	return strings.TrimSpace(c.Addr) != "" ||
 		strings.TrimSpace(c.Password) != "" ||
 		c.DB != 0
