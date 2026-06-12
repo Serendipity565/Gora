@@ -21,7 +21,7 @@ import {
   getDisabledTools,
   renderConnection,
   renderToolList,
-  scrollToBottom,
+  scrollToBottomIfPinned,
   setAgentState,
   wireCollapsibleSections,
 } from "./ui";
@@ -409,7 +409,9 @@ async function sendMessage(message: string): Promise<void> {
         } else if (event.type === "done") {
           setAgentState(agentStateEl, "done");
         }
-        scrollToBottom(messagesEl);
+        // 仅当用户没主动往上翻历史时才贴底；
+        // 否则保持当前阅读位置，避免被流式事件强制拉走。
+        scrollToBottomIfPinned(messagesEl);
       },
       inFlight.signal,
     );

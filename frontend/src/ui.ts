@@ -16,6 +16,16 @@ const escapeHtml = (text: string): string => {
 };
 
 /**
+ * 给折叠 summary 用的单行预览：把多行内容压成一行，
+ * 超出 120 字以省略号截断。原始内容由展开后的 <pre> 完整呈现。
+ */
+function truncatePreview(text: string, max = 120): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (flat.length <= max) return flat;
+  return flat.slice(0, max).trimEnd() + "…";
+}
+
+/**
  * 把 Agent 输出的原始 markdown 渲染为安全 HTML。
  * 流式过程中也会被反复调用，因此用 marked 的同步模式 + DOMPurify。
  */
@@ -28,6 +38,19 @@ function renderMarkdown(raw: string): string {
 
 export function scrollToBottom(container: HTMLElement): void {
   container.scrollTop = container.scrollHeight;
+}
+
+/**
+ * 仅当用户当前已经处于（接近）底部时才滚到底。
+ *
+ * 用来在流式输出时跟随最新内容；如果用户主动往上翻看历史，就不要再把他拽回底部。
+ * 16px 的容差允许行高 / 滚动条精度上的小误差。
+ */
+export function scrollToBottomIfPinned(container: HTMLElement, threshold = 16): void {
+  const distance = container.scrollHeight - container.clientHeight - container.scrollTop;
+  if (distance <= threshold) {
+    container.scrollTop = container.scrollHeight;
+  }
 }
 
 /** 清空对话区，开启新会话时调用。 */
@@ -117,12 +140,29 @@ export function appendEventNode(
 
 /**
  * 把 SSE 事件应用到 Agent 气泡上，返回更新后的 handle（可能创建/复用流式节点）。
+ *
+ * 事件渲染顺序遵循"按到达顺序 append"。chunk 会创建一个流式段落 div，
+ * 一旦中间出现非 chunk 事件（thinking / tool_call / tool_result / permission / error）
+ * 就把当前流式段落"封口"——清空 handle.streamTarget，让下一段 chunk 新建一个
+ * div 追加在事件节点之后，避免出现"模型回复跑到 tool 调用前面"。
  */
 export function applyEvent(
   handle: AgentBubbleHandle,
   event: AgentEvent,
   counters: { event: number; tool: number; chunk: number },
 ): AgentBubbleHandle {
+  // 任何非 chunk 事件都先把当前流式段落封口，
+  // 这样下一段 chunk 会以新的 div 接在该事件节点之后。
+  const sealStream = (next: AgentBubbleHandle): AgentBubbleHandle => {
+    if (next.streamTarget) {
+      next.streamTarget.classList.remove("typing-cursor");
+      if (next.streamRaw) {
+        next.streamTarget.innerHTML = renderMarkdown(next.streamRaw);
+      }
+    }
+    return { ...next, streamTarget: null, streamRaw: "" };
+  };
+
   switch (event.type) {
     case "thinking":
       appendEventNode(
@@ -130,32 +170,52 @@ export function applyEvent(
         "event-thinking",
         escapeHtml(event.content ?? "正在思考..."),
       );
-      return handle;
+      return sealStream(handle);
 
     case "tool_call": {
       counters.tool += 1;
       const args = event.metadata?.["args"];
-      const argsHtml =
-        args !== undefined
-          ? `<br><code>${escapeHtml(JSON.stringify(args, null, 2))}</code>`
-          : "";
+      const toolName = event.content ?? "";
+      const argsJSON = args !== undefined ? JSON.stringify(args, null, 2) : "";
+      const summaryPreview = argsJSON ? truncatePreview(argsJSON) : "";
+      const argsBody = argsJSON
+        ? `<pre class="event-collapse-body"><code>${escapeHtml(argsJSON)}</code></pre>`
+        : "";
       appendEventNode(
         handle.bubble,
-        "event-tool-call",
-        `🔧 调用工具 <strong>${escapeHtml(event.content ?? "")}</strong>${argsHtml}`,
+        "event-tool-call event-collapse",
+        `<details class="event-collapse-details">
+           <summary class="event-collapse-summary">
+             <span class="event-collapse-icon" aria-hidden="true">▸</span>
+             <span class="event-collapse-title">🔧 调用工具 <strong>${escapeHtml(toolName)}</strong></span>
+             ${summaryPreview ? `<span class="event-collapse-preview">${escapeHtml(summaryPreview)}</span>` : ""}
+           </summary>
+           ${argsBody}
+         </details>`,
       );
-      return handle;
+      return sealStream(handle);
     }
 
     case "tool_result": {
       const tool = event.metadata?.["tool"];
-      const header = tool ? `📥 工具 <strong>${escapeHtml(String(tool))}</strong> 返回` : "📥 工具返回";
+      const header = tool
+        ? `📥 工具 <strong>${escapeHtml(String(tool))}</strong> 返回`
+        : "📥 工具返回";
+      const content = event.content ?? "";
+      const summaryPreview = truncatePreview(content);
       appendEventNode(
         handle.bubble,
-        "event-tool-result",
-        `${header}\n${escapeHtml(event.content ?? "")}`,
+        "event-tool-result event-collapse",
+        `<details class="event-collapse-details">
+           <summary class="event-collapse-summary">
+             <span class="event-collapse-icon" aria-hidden="true">▸</span>
+             <span class="event-collapse-title">${header}</span>
+             ${summaryPreview ? `<span class="event-collapse-preview">${escapeHtml(summaryPreview)}</span>` : ""}
+           </summary>
+           <pre class="event-collapse-body">${escapeHtml(content)}</pre>
+         </details>`,
       );
-      return handle;
+      return sealStream(handle);
     }
 
     case "tool_permission_request": {
@@ -214,7 +274,7 @@ export function applyEvent(
           b.disabled = true;
         });
       }
-      return handle;
+      return sealStream(handle);
     }
 
     case "chunk": {
@@ -236,7 +296,7 @@ export function applyEvent(
         "event-error",
         `❌ ${escapeHtml(event.content ?? "未知错误")}`,
       );
-      return handle;
+      return sealStream(handle);
 
     case "done":
       // 收到 done 后做两件事：
@@ -263,7 +323,7 @@ export function applyEvent(
         "event-thinking",
         `· ${escapeHtml(event.content ?? event.type)}`,
       );
-      return handle;
+      return sealStream(handle);
   }
 }
 

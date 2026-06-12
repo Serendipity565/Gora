@@ -168,12 +168,37 @@ func (a *EinoAgent) RunSession(ctx context.Context, sessionID, input string) <-c
 			}
 		}
 
+		// toolEventBuf 缓冲 InvokableRun 发出的 tool_call/tool_result 事件，
+		// 由 flushToolEvents 在主循环中按序排空，确保工具事件不会与流式 chunk 交错。
+		var toolEventBuf []core.Event
+		var toolEventMu sync.Mutex
+
+		toolSend := func(event core.Event) bool {
+			toolEventMu.Lock()
+			toolEventBuf = append(toolEventBuf, event)
+			toolEventMu.Unlock()
+			return true
+		}
+
+		flushToolEvents := func() bool {
+			toolEventMu.Lock()
+			buf := toolEventBuf
+			toolEventBuf = nil
+			toolEventMu.Unlock()
+			for _, e := range buf {
+				if !send(e) {
+					return false
+				}
+			}
+			return true
+		}
+
 		if strings.TrimSpace(sessionID) == "" {
 			sessionID = DefaultSessionID
 		}
 
 		messages := a.prepareMessages(sessionID, input)
-		runCtx = withToolEventEmitter(runCtx, send, a.ID())
+		runCtx = withToolEventEmitter(runCtx, toolSend, a.ID())
 
 		if !send(core.NewThinkingEvent(a.ID(), "正在使用 Eino Agent 思考...")) {
 			return
@@ -201,6 +226,12 @@ func (a *EinoAgent) RunSession(ctx context.Context, sessionID, input string) <-c
 				continue
 			}
 
+			// 在处理新一轮模型输出之前，先排空上一轮工具调用产生的事件，
+			// 保证 tool_call/tool_result 按序出现在模型回答之前。
+			if !flushToolEvents() {
+				return
+			}
+
 			content, role, ok := a.forwardMessageOutput(event.Output.MessageOutput, send)
 			if !ok {
 				return
@@ -209,6 +240,9 @@ func (a *EinoAgent) RunSession(ctx context.Context, sessionID, input string) <-c
 				assistantContents = append(assistantContents, content)
 			}
 		}
+
+		// 排空可能残留的工具事件（流被客户端提前中断等场景）
+		flushToolEvents()
 
 		finalReply := strings.TrimSpace(strings.Join(assistantContents, "\n"))
 		a.saveMessages(sessionID, input, finalReply)
