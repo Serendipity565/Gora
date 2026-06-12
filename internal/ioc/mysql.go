@@ -6,14 +6,15 @@ import (
 	"os"
 	"time"
 
-	"github.com/Serendipity565/gora/internal/config"
+	"github.com/Serendipity565/gora/configs"
+	"github.com/Serendipity565/gora/internal/repository"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
 
 // InitMysql 根据 cfg 初始化 MySQL 连接，并返回 *gorm.DB 实例。
-func InitMysql(cfg config.MySQLConfig) *gorm.DB {
+func InitMysql(cfg configs.MySQLConfig) *gorm.DB {
 	dsn := fmt.Sprintf("%s:%s@tcp(%s)/%s?charset=utf8&parseTime=true&loc=Local",
 		cfg.Username, cfg.Password, cfg.Addr, cfg.DBName)
 
@@ -56,6 +57,12 @@ func InitMysql(cfg config.MySQLConfig) *gorm.DB {
 			))
 		}
 		sqlDB.SetConnMaxLifetime(lifetime)
+	}
+
+	// 自动迁移业务表结构。
+	err = repository.InitTables(db)
+	if err != nil {
+		panic(fmt.Sprintf("MySQL 自动迁移失败: %v", err))
 	}
 
 	return db

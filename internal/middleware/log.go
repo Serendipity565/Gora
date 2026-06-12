@@ -3,11 +3,10 @@ package middleware
 import (
 	"time"
 
+	"github.com/Serendipity565/gora/configs"
 	"github.com/Serendipity565/gora/pkg/logger"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
-
-	appconfig "github.com/Serendipity565/gora/internal/config"
 )
 
 // LoggerMiddleware 是基于结构化 Logger 的访问日志中间件。
@@ -19,7 +18,7 @@ type LoggerMiddleware struct {
 }
 
 // NewLoggerMiddleware 用 logger.Logger 与 LogConfig.SkipPaths 构造日志中间件。
-func NewLoggerMiddleware(log logger.Logger, cfg appconfig.LogConfig) *LoggerMiddleware {
+func NewLoggerMiddleware(log logger.Logger, cfg configs.LogConfig) *LoggerMiddleware {
 	skips := make(map[string]struct{}, len(cfg.SkipPaths))
 	for _, p := range cfg.SkipPaths {
 		if p != "" {

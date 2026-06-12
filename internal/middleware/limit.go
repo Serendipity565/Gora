@@ -9,10 +9,9 @@ import (
 	"time"
 
 	"github.com/Serendipity565/gora/api/response"
+	"github.com/Serendipity565/gora/configs"
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
-
-	appconfig "github.com/Serendipity565/gora/internal/config"
 )
 
 //go:embed scripts/limiter.lua
@@ -28,7 +27,7 @@ type LimitMiddleware struct {
 }
 
 // NewLimitMiddleware 构造限流中间件。
-func NewLimitMiddleware(cfg appconfig.LimiterConfig, client *redis.Client) *LimitMiddleware {
+func NewLimitMiddleware(cfg configs.LimiterConfig, client *redis.Client) *LimitMiddleware {
 	return &LimitMiddleware{
 		capacity:     cfg.Capacity,
 		fillInterval: cfg.FillInterval,

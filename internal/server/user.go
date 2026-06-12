@@ -99,7 +99,7 @@ func (s *userServiceImpl) GetByID(ctx context.Context, id uint64) (*domain.UserI
 }
 
 func (s *userServiceImpl) UpdateProfile(ctx context.Context, user *domain.User) (*domain.UserInfo, error) {
-	mUser, err := s.dao.FindOne(ctx, repository.ByID(uint64(user.ID)))
+	mUser, err := s.dao.FindOne(ctx, repository.ByID(user.ID))
 	if err != nil {
 		return nil, err
 	}

@@ -1,3 +1,4 @@
+// Package tool 定义工具接口与注册中心。
 package tool
 
 import "context"

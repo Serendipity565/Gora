@@ -1,3 +1,4 @@
+// Package llm 封装大语言模型的创建与配置。
 package llm
 
 import (

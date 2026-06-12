@@ -8,18 +8,17 @@ package main
 
 import (
 	"context"
+	"github.com/Serendipity565/gora/configs"
 	"github.com/Serendipity565/gora/internal/agent/tool"
 	"github.com/Serendipity565/gora/internal/agent/tool/builtin"
-	"github.com/Serendipity565/gora/internal/config"
 	"github.com/Serendipity565/gora/internal/controller"
 	"github.com/Serendipity565/gora/internal/ioc"
 	"github.com/Serendipity565/gora/internal/middleware"
-	"github.com/Serendipity565/gora/internal/repository/cache"
-	"github.com/Serendipity565/gora/internal/repository/dao"
+	"github.com/Serendipity565/gora/internal/repository/mysql"
+	"github.com/Serendipity565/gora/internal/repository/redis"
 	"github.com/Serendipity565/gora/internal/router"
 	"github.com/Serendipity565/gora/internal/server"
 	"github.com/Serendipity565/gora/pkg/ijwt"
-	"gorm.io/gorm"
 )
 
 // Injectors from wire.go:
@@ -28,38 +27,35 @@ import (
 // 路由引擎），打包成 *App 交给 main.go 启动。
 //
 // 修改任何 ProviderSet 后必须执行 `make wire` 重新生成 cmd/gora/wire_gen.go。
-func newApp(ctx context.Context, cfg config.Config) (*App, func(), error) {
+func newApp(ctx context.Context, cfg configs.Config) (*App, func(), error) {
 	registry, err := provideToolRegistry()
 	if err != nil {
 		return nil, nil, err
 	}
-	mySQLConfig := config.NewMysqlConfig(cfg)
+	mySQLConfig := configs.NewMysqlConfig(cfg)
 	db := ioc.InitMysql(mySQLConfig)
-	databaseStore, cleanup, err := provideDatabaseStore(ctx, db)
+	v := mysql.NewSessionDAO(db)
+	v2 := mysql.NewMessageDAO(db)
+	activeMemoryCache, cleanup, err := provideActiveMemoryCache(ctx, cfg)
 	if err != nil {
 		return nil, nil, err
 	}
-	activeMemoryCache, cleanup2, err := provideActiveMemoryCache(ctx, cfg)
-	if err != nil {
-		cleanup()
-		return nil, nil, err
-	}
-	logConfig := config.NewLogConfig(cfg)
+	logConfig := configs.NewLogConfig(cfg)
 	logger := ioc.InitLogger(logConfig)
-	jwtConfig := config.NewJWTConfig(cfg)
+	jwtConfig := configs.NewJWTConfig(cfg)
 	jwt := ijwt.NewJWT(jwtConfig)
 	agentService := server.NewAgentService()
 	modelService := server.NewModelService()
-	v := dao.NewUserDAO(db)
-	userService := server.NewUserService(v)
-	corsConfig := config.NewCorsConfig(cfg)
+	v3 := mysql.NewUserDAO(db)
+	userService := server.NewUserService(v3)
+	corsConfig := configs.NewCorsConfig(cfg)
 	corsMiddleware := middleware.NewCorsMiddleware(corsConfig)
 	authMiddleware := middleware.NewAuthMiddleware(jwt)
-	v2 := config.NewBasicAuthAccounts(cfg)
-	basicAuthMiddleware := middleware.NewBasicAuthMiddleware(v2)
+	v4 := configs.NewBasicAuthAccounts(cfg)
+	basicAuthMiddleware := middleware.NewBasicAuthMiddleware(v4)
 	loggerMiddleware := middleware.NewLoggerMiddleware(logger, logConfig)
-	limiterConfig := config.NewLimiterConfig(cfg)
-	redisConfig := config.NewRedisConfig(cfg)
+	limiterConfig := configs.NewLimiterConfig(cfg)
+	redisConfig := configs.NewRedisConfig(cfg)
 	client := ioc.InitRedis(redisConfig)
 	limitMiddleware := middleware.NewLimitMiddleware(limiterConfig, client)
 	userHandler := controller.NewUser(jwt, userService)
@@ -69,13 +65,16 @@ func newApp(ctx context.Context, cfg config.Config) (*App, func(), error) {
 	modelHandler := controller.NewModel(modelService)
 	permissionService := server.NewPermissionService()
 	chatService := server.NewChatService(agentService, permissionService)
-	v3 := provideChatOptions()
-	chatHandler := controller.NewChat(chatService, permissionService, v3...)
+	v5 := provideChatOptions()
+	chatHandler := controller.NewChat(chatService, permissionService, v5...)
+	historyService := server.NewHistoryService(v, v2)
+	historyHandler := controller.NewHistory(historyService)
 	healthHandler := controller.NewHealth()
-	engine := router.NewEngine(corsMiddleware, authMiddleware, basicAuthMiddleware, loggerMiddleware, limitMiddleware, userHandler, agentHandler, toolHandler, modelHandler, chatHandler, healthHandler)
+	engine := router.NewEngine(corsMiddleware, authMiddleware, basicAuthMiddleware, loggerMiddleware, limitMiddleware, userHandler, agentHandler, toolHandler, modelHandler, chatHandler, historyHandler, healthHandler)
 	app := &App{
 		Registry:     registry,
-		DB:           databaseStore,
+		SessionDAO:   v,
+		MessageDAO:   v2,
 		Cache:        activeMemoryCache,
 		Logger:       logger,
 		JWT:          jwt,
@@ -85,7 +84,6 @@ func newApp(ctx context.Context, cfg config.Config) (*App, func(), error) {
 		Router:       engine,
 	}
 	return app, func() {
-		cleanup2()
 		cleanup()
 	}, nil
 }
@@ -101,21 +99,11 @@ func provideToolRegistry() (*tool.Registry, error) {
 	return r, nil
 }
 
-// provideDatabaseStore 把 *gorm.DB 包装成 repository.DatabaseStore（带 cleanup）。
-func provideDatabaseStore(ctx context.Context, db *gorm.DB) (dao.DatabaseStore, func(), error) {
-	store, err := dao.NewDatabaseStoreFromGorm(ctx, db)
-	if err != nil {
-		return nil, nil, err
-	}
-	cleanup := func() { _ = store.Close() }
-	return store, cleanup, nil
-}
-
 // provideActiveMemoryCache 根据 cfg.Database.Redis 创建短期记忆缓存；
 // 未配置 Redis 时退化为 NoopActiveMemoryCache（即不缓存，由数据库历史兜底）。
-func provideActiveMemoryCache(ctx context.Context, cfg config.Config) (cache.ActiveMemoryCache, func(), error) {
+func provideActiveMemoryCache(ctx context.Context, cfg configs.Config) (redis.ActiveMemoryCache, func(), error) {
 	rs := cfg.Database.Redis
-	store, err := cache.OpenActiveMemoryCache(ctx, rs.Addr, rs.Password, rs.DB, 0)
+	store, err := redis.OpenActiveMemoryCache(ctx, rs.Addr, rs.Password, rs.DB, 0)
 	if err != nil {
 		return nil, nil, err
 	}

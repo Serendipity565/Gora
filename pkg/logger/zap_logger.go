@@ -4,10 +4,12 @@ import (
 	"go.uber.org/zap"
 )
 
+// NewZapLogger 基于 *zap.Logger 创建 Logger 接口的实现。
 func NewZapLogger(l *zap.Logger) Logger {
 	return &ZapLogger{l: l}
 }
 
+// ZapLogger 是 Logger 接口的 zap 实现。
 type ZapLogger struct {
 	l *zap.Logger
 }

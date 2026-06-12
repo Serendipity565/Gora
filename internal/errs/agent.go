@@ -6,9 +6,7 @@ import (
 	"github.com/Serendipity565/gora/pkg/errorx"
 )
 
-/*
-2002xx - Agent / 工具 / 模型 / 权限 业务错误
-*/
+// 2002xx - Agent / 工具 / 模型 / 权限 业务错误
 
 const (
 	ErrAgentNotFoundCode = 200200 + iota
@@ -18,15 +16,19 @@ const (
 )
 
 var (
+	// ErrAgentNotFound agent 不存在。
 	ErrAgentNotFound = func(err error) error {
 		return errorx.New(http.StatusNotFound, ErrAgentNotFoundCode, "agent 不存在", err)
 	}
+	// ErrModelInvalid 模型选择无效。
 	ErrModelInvalid = func(err error) error {
 		return errorx.New(http.StatusBadRequest, ErrModelInvalidCode, "模型选择无效", err)
 	}
+	// ErrModelSelectorNotConfigured 未配置模型选择器。
 	ErrModelSelectorNotConfigured = func(err error) error {
 		return errorx.New(http.StatusNotImplemented, ErrModelSelectorNotConfiguredCode, "未配置模型选择器", err)
 	}
+	// ErrPermissionRequestNotFound 授权请求已过期或不存在。
 	ErrPermissionRequestNotFound = func(err error) error {
 		return errorx.New(http.StatusNotFound, ErrPermissionRequestNotFoundCode, "授权请求已过期或不存在", err)
 	}

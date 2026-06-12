@@ -1,4 +1,5 @@
-package config
+// Package configs 定义应用配置结构与 yaml 加载逻辑。
+package configs
 
 import (
 	"github.com/google/wire"
@@ -135,9 +136,6 @@ type AgentConfig struct {
 	Instruction         string `mapstructure:"instruction" yaml:"instruction"`
 	MaxHistoryMessages  int    `mapstructure:"max_history_messages" yaml:"max_history_messages"`
 	MaxStreamChunkRunes int    `mapstructure:"max_stream_chunk_runes" yaml:"max_stream_chunk_runes"`
-
-	// UserID 模型选择 / 历史消息持久化用的 user_id。空时使用 repository.LocalUserID（"local"）。
-	UserID string `mapstructure:"user_id" yaml:"user_id"`
 }
 
 // AdminConfig 是启动期 seed 的内置管理员账号；所有字段非空时该账号才会被插入。

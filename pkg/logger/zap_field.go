@@ -2,6 +2,7 @@ package logger
 
 import "go.uber.org/zap"
 
+// Field 是 zap.Field 的类型别名，对外屏蔽 zap 实现细节。
 type Field = zap.Field
 
 var (

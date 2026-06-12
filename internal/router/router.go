@@ -29,6 +29,7 @@ func NewEngine(
 	tool controller.ToolHandler,
 	model controller.ModelHandler,
 	chat controller.ChatHandler,
+	history controller.HistoryHandler,
 	health controller.HealthHandler,
 ) *gin.Engine {
 	gin.ForceConsoleColor()
@@ -49,6 +50,7 @@ func NewEngine(
 	RegisterToolRouter(api, tool)
 	RegisterModelRouter(api, model)
 	RegisterChatRouter(api, chat)
+	RegisterSessionRouter(api, history, authMiddleware.MiddlewareFunc())
 
 	// basicAuthMiddleware 暂未挂载到任何路由（预留给未来 /metrics 等运维端点）。
 	// 保留参数避免 wire 忽略依赖，使重新引入时无需改动 NewEngine 签名。

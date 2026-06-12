@@ -1,3 +1,4 @@
+// Package eino 基于 CloudWeGo Eino ADK 实现 core.Agent 接口。
 package eino
 
 import (

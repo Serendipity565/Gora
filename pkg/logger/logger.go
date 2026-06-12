@@ -1,3 +1,4 @@
+// Package logger 提供日志抽象，以接口定义通用行为，以 zap 实现具体的日志输出。
 package logger
 
 // Logger is logger interface.

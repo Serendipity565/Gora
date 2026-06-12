@@ -1,3 +1,4 @@
+// Package errorx 提供带调用栈信息的结构化错误类型。
 package errorx
 
 import (

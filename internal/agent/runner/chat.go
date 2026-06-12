@@ -2,17 +2,20 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
+	appconfig "github.com/Serendipity565/gora/configs"
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/Serendipity565/gora/internal/agent/eino"
 	"github.com/Serendipity565/gora/internal/agent/llm"
 	"github.com/Serendipity565/gora/internal/agent/tool"
-	appconfig "github.com/Serendipity565/gora/internal/config"
-	storage "github.com/Serendipity565/gora/internal/repository"
+	"github.com/Serendipity565/gora/internal/repository"
+	"github.com/Serendipity565/gora/internal/repository/model"
 )
 
 // historyCarrier 抽象出"能快照 / 恢复多 session 历史"的 Agent。
@@ -55,69 +58,11 @@ func buildChatAgent(
 	return chatAgent, nil
 }
 
-// restoreModelSelection 从 modelStore 读出 (user, agent, session) 之前选择的 LLM 索引；
-// 失败时回落到默认 0 并把诊断写到 errOut。
-func restoreModelSelection(
-	ctx context.Context,
-	out, errOut io.Writer,
-	store storage.ModelSelectionStore,
-	userID string,
-	sessionID string,
-	cfg appconfig.Config,
-) int {
-	selection, ok, err := store.Get(ctx, userID, cfg.Agent.ID, normalizeSessionID(sessionID))
-	if err != nil {
-		fmt.Fprintf(errOut, "读取模型选择失败，将使用默认模型: %v\n", err)
-		return 0
-	}
-	if !ok {
-		return 0
-	}
-
-	index, ok := resolveStoredLLMIndex(cfg, selection)
-	if !ok {
-		fmt.Fprintf(errOut, "已保存的模型 name 不在当前配置中，将使用默认模型: %s\n", selection.LLMName)
-		return 0
-	}
-
-	fmt.Fprintf(out, "已恢复模型选择: %s\n", cfg.LLM[index].Name)
-	return index
-}
-
-// saveModelSelection 把当前选择写入 modelStore。失败时只打印诊断，不阻塞主流程。
-func saveModelSelection(
-	ctx context.Context,
-	errOut io.Writer,
-	store storage.ModelSelectionStore,
-	userID string,
-	sessionID string,
-	cfg appconfig.Config,
-	llmIndex int,
-) {
-	if llmIndex < 0 || llmIndex >= len(cfg.LLM) {
-		fmt.Fprintf(errOut, "保存模型选择失败: 模型序号超出范围: %d\n", llmIndex+1)
-		return
-	}
-
-	llmConfig := cfg.LLM[llmIndex]
-	err := store.Save(ctx, storage.ModelSelection{
-		UserID:    userID,
-		AgentID:   cfg.Agent.ID,
-		SessionID: normalizeSessionID(sessionID),
-		LLMName:   llmConfig.Name,
-		Model:     llmConfig.Model,
-		LLMIndex:  llmIndex,
-	})
-	if err != nil {
-		fmt.Fprintf(errOut, "保存模型选择失败: %v\n", err)
-	}
-}
-
-// resolveStoredLLMIndex 把存储中读到的 ModelSelection 翻译成当前 cfg.LLM 的下标。
+// resolveStoredLLMIndex 把 session 中持久化的 llm_name 翻译成当前 cfg.LLM 的下标。
 //
-// 唯一依据是 selection.LLMName —— 项目约定 name 是模型的唯一标识。
-func resolveStoredLLMIndex(cfg appconfig.Config, selection storage.ModelSelection) (int, bool) {
-	name := strings.TrimSpace(selection.LLMName)
+// 唯一依据是 LLMName —— 项目约定 name 是模型的唯一标识。
+func resolveStoredLLMIndex(cfg appconfig.Config, llmName string) (int, bool) {
+	name := strings.TrimSpace(llmName)
 	if name == "" {
 		return 0, false
 	}
@@ -133,16 +78,15 @@ func resolveStoredLLMIndex(cfg appconfig.Config, selection storage.ModelSelectio
 func restoreConversationContext(
 	ctx context.Context,
 	out, errOut io.Writer,
-	historyStore storage.ChatHistoryStore,
-	memoryStore storage.ActiveMemoryStore,
-	userID string,
+	messageDAO repository.MessageDAO,
+	memoryStore repository.ActiveMemoryStore,
+	userID uint64,
 	sessionID string,
 	cfg appconfig.Config,
 	chatAgent historyCarrier,
 ) {
-	sessionID = normalizeSessionID(sessionID)
-	applyRestoredMessages := func(messages []storage.ChatMessage) {
-		restored := chatMessagesToHistories(sessionID, messages)
+	applyRestoredMessages := func(messages []model.Message) {
+		restored := messagesToHistories(sessionID, messages)
 		if len(restored) == 0 {
 			return
 		}
@@ -156,28 +100,28 @@ func restoreConversationContext(
 		chatAgent.RestoreHistories(histories)
 	}
 
-	messages, ok, err := memoryStore.Get(ctx, userID, cfg.Agent.ID, sessionID)
+	cached, ok, err := memoryStore.Get(ctx, userID, cfg.Agent.ID, sessionID)
 	if err != nil {
 		fmt.Fprintf(errOut, "读取短期记忆失败，将尝试读取数据库历史: %v\n", err)
 	}
-	if ok && len(messages) > 0 {
-		applyRestoredMessages(messages)
-		fmt.Fprintf(out, "已恢复短期记忆: %d 条消息\n", len(messages))
+	if ok && len(cached) > 0 {
+		applyRestoredMessages(cached)
+		fmt.Fprintf(out, "已恢复短期记忆: %d 条消息\n", len(cached))
 		return
 	}
 
-	messages, err = historyStore.ListRecentMessages(ctx, userID, cfg.Agent.ID, sessionID, cfg.Agent.MaxHistoryMessages)
+	persisted, err := messageDAO.ListRecent(ctx, sessionID, cfg.Agent.MaxHistoryMessages)
 	if err != nil {
 		fmt.Fprintf(errOut, "读取历史对话失败，将从空上下文开始: %v\n", err)
 		return
 	}
-	if len(messages) == 0 {
+	if len(persisted) == 0 {
 		return
 	}
 
-	applyRestoredMessages(messages)
-	fmt.Fprintf(out, "已从历史记录恢复上下文: %d 条消息\n", len(messages))
-	if err := memoryStore.Save(ctx, userID, cfg.Agent.ID, sessionID, messages); err != nil {
+	applyRestoredMessages(persisted)
+	fmt.Fprintf(out, "已从历史记录恢复上下文: %d 条消息\n", len(persisted))
+	if err := memoryStore.Save(ctx, userID, cfg.Agent.ID, sessionID, persisted); err != nil {
 		fmt.Fprintf(errOut, "回填短期记忆失败: %v\n", err)
 	}
 }
@@ -189,66 +133,92 @@ func restoreConversationContext(
 func persistConversationTurn(
 	ctx context.Context,
 	errOut io.Writer,
-	historyStore storage.ChatHistoryStore,
-	memoryStore storage.ActiveMemoryStore,
-	userID string,
+	sessionDAO repository.SessionDAO,
+	messageDAO repository.MessageDAO,
+	memoryStore repository.ActiveMemoryStore,
+	userID uint64,
 	sessionID string,
 	cfg appconfig.Config,
 	llmIndex int,
 	input, reply string,
 	chatAgent historyCarrier,
+	now func() time.Time,
 ) {
-	sessionID = normalizeSessionID(sessionID)
 	if llmIndex < 0 || llmIndex >= len(cfg.LLM) {
 		fmt.Fprintf(errOut, "保存历史对话失败: 模型序号超出范围: %d\n", llmIndex+1)
 		return
 	}
 
 	llmConfig := cfg.LLM[llmIndex]
-	messages := []storage.ChatMessage{{
+
+	// 取下一个 seq 起点。
+	seq, err := messageDAO.NextSeq(ctx, sessionID)
+	if err != nil {
+		fmt.Fprintf(errOut, "读取消息序号失败: %v\n", err)
+		return
+	}
+
+	turn := []model.Message{{
+		SessionID: sessionID,
+		Seq:       seq,
 		UserID:    userID,
 		AgentID:   cfg.Agent.ID,
-		SessionID: sessionID,
-		Role:      string(schema.User),
+		Role:      model.RoleUser,
 		Content:   input,
 		LLMName:   llmConfig.Name,
 		Model:     llmConfig.Model,
 	}}
 	if strings.TrimSpace(reply) != "" {
-		messages = append(messages, storage.ChatMessage{
+		turn = append(turn, model.Message{
+			SessionID: sessionID,
+			Seq:       seq + 1,
 			UserID:    userID,
 			AgentID:   cfg.Agent.ID,
-			SessionID: sessionID,
-			Role:      string(schema.Assistant),
+			Role:      model.RoleAssistant,
 			Content:   reply,
 			LLMName:   llmConfig.Name,
 			Model:     llmConfig.Model,
 		})
 	}
-	if err := historyStore.AppendMessages(ctx, messages); err != nil {
+	if err := messageDAO.Append(ctx, turn); err != nil {
 		fmt.Fprintf(errOut, "保存历史对话失败: %v\n", err)
 	}
 
+	// 同步刷新 session 元信息（LLM、last_message_at、归属用户）。
+	if err := sessionDAO.Upsert(ctx, &model.Session{
+		ID:            sessionID,
+		UserID:        userID,
+		Title:         "新对话",
+		LLMName:       llmConfig.Name,
+		LastMessageAt: now(),
+		Status:        model.SessionStatusActive,
+	}); err != nil {
+		fmt.Fprintf(errOut, "更新会话元信息失败: %v\n", err)
+	}
+
+	// 同步刷新 Redis 短期记忆（snapshot 截断到 max）。
 	snapshot := chatAgent.SnapshotHistories()
-	activeMessages := schemaMessagesToChatMessages(userID, cfg.Agent.ID, sessionID, llmConfig, snapshot[sessionID])
-	activeMessages = trimChatMessages(activeMessages, cfg.Agent.MaxHistoryMessages)
+	activeMessages := schemaMessagesToMessages(userID, cfg.Agent.ID, sessionID, llmConfig, snapshot[sessionID])
+	activeMessages = trimMessages(activeMessages, cfg.Agent.MaxHistoryMessages)
 	if err := memoryStore.Save(ctx, userID, cfg.Agent.ID, sessionID, activeMessages); err != nil {
 		fmt.Fprintf(errOut, "保存短期记忆失败: %v\n", err)
 	}
 }
 
-// chatMessagesToHistories 把 storage 里读出的消息转成 eino schema.Message，按 session 分组。
+// messagesToHistories 把 model.Message 转成 eino schema.Message，按 session 分组。
 //
 // 工具消息不需要回填给 LLM，直接丢弃；不识别 role 也丢弃。
-func chatMessagesToHistories(sessionID string, messages []storage.ChatMessage) map[string][]*schema.Message {
-	sessionID = normalizeSessionID(sessionID)
+func messagesToHistories(sessionID string, messages []model.Message) map[string][]*schema.Message {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil
+	}
 	history := make([]*schema.Message, 0, len(messages))
 	for _, message := range messages {
 		content := strings.TrimSpace(message.Content)
 		if content == "" {
 			continue
 		}
-		switch schema.RoleType(strings.ToLower(strings.TrimSpace(message.Role))) {
+		switch schema.RoleType(strings.ToLower(strings.TrimSpace(string(message.Role)))) {
 		case schema.User:
 			history = append(history, schema.UserMessage(content))
 		case schema.Assistant:
@@ -265,15 +235,15 @@ func chatMessagesToHistories(sessionID string, messages []storage.ChatMessage) m
 	}
 }
 
-// schemaMessagesToChatMessages 把 eino schema.Message 转成可落库的 storage.ChatMessage。
+// schemaMessagesToMessages 把 eino schema.Message 转成可缓存的 model.Message。
 //
-// Tool 消息不写入历史表（与 chatMessagesToHistories 对称）。
-func schemaMessagesToChatMessages(
-	userID, agentID, sessionID string,
+// Tool 消息不写入历史表（与 messagesToHistories 对称）。
+func schemaMessagesToMessages(
+	userID uint64, agentID, sessionID string,
 	llmConfig appconfig.LLMConfig,
 	messages []*schema.Message,
-) []storage.ChatMessage {
-	out := make([]storage.ChatMessage, 0, len(messages))
+) []model.Message {
+	out := make([]model.Message, 0, len(messages))
 	for _, message := range messages {
 		if message == nil {
 			continue
@@ -283,14 +253,22 @@ func schemaMessagesToChatMessages(
 			continue
 		}
 		role := strings.ToLower(strings.TrimSpace(string(message.Role)))
-		if role != string(schema.User) && role != string(schema.Assistant) && role != string(schema.System) {
+		var typed model.MessageRole
+		switch role {
+		case string(schema.User):
+			typed = model.RoleUser
+		case string(schema.Assistant):
+			typed = model.RoleAssistant
+		case string(schema.System):
+			typed = model.RoleSystem
+		default:
 			continue
 		}
-		out = append(out, storage.ChatMessage{
+		out = append(out, model.Message{
+			SessionID: sessionID,
 			UserID:    userID,
 			AgentID:   agentID,
-			SessionID: sessionID,
-			Role:      role,
+			Role:      typed,
 			Content:   content,
 			LLMName:   llmConfig.Name,
 			Model:     llmConfig.Model,
@@ -299,10 +277,21 @@ func schemaMessagesToChatMessages(
 	return out
 }
 
-// trimChatMessages 保留最后 max 条消息，超过 max 的从前面截断。
-func trimChatMessages(messages []storage.ChatMessage, max int) []storage.ChatMessage {
+// trimMessages 保留最后 max 条消息，超过 max 的从前面截断。
+func trimMessages(messages []model.Message, max int) []model.Message {
 	if max <= 0 || len(messages) <= max {
 		return messages
 	}
-	return append([]storage.ChatMessage(nil), messages[len(messages)-max:]...)
+	return append([]model.Message(nil), messages[len(messages)-max:]...)
+}
+
+// requireSessionID 校验 sessionID 非空；空时返回错误。
+//
+// 项目去掉了 "default" 兜底语义：每次对话/查询都必须显式给出 session id。
+func requireSessionID(sessionID string) (string, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return "", errors.New("session id 不能为空")
+	}
+	return sessionID, nil
 }

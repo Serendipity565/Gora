@@ -1,4 +1,4 @@
-package cache
+package redis
 
 import (
 	"context"
@@ -18,13 +18,13 @@ func TestOpenActiveMemoryCacheWithoutAddrUsesNoop(t *testing.T) {
 	if _, ok := store.(NoopActiveMemoryCache); !ok {
 		t.Fatalf("expected noop cache, got %T", store)
 	}
-	if err := store.Save(context.Background(), "local", "agent-1", "default", []model.ChatMessage{{
+	if err := store.Save(context.Background(), 1, "agent-1", "default", []model.Message{{
 		Role:    "user",
 		Content: "hello",
 	}}); err != nil {
 		t.Fatalf("noop save failed: %v", err)
 	}
-	if _, ok, err := store.Get(context.Background(), "local", "agent-1", "default"); err != nil || ok {
+	if _, ok, err := store.Get(context.Background(), 1, "agent-1", "default"); err != nil || ok {
 		t.Fatalf("noop get failed: ok=%v err=%v", ok, err)
 	}
 }
@@ -32,11 +32,11 @@ func TestOpenActiveMemoryCacheWithoutAddrUsesNoop(t *testing.T) {
 func TestActiveMemoryKey(t *testing.T) {
 	t.Parallel()
 
-	key, err := activeMemoryKey("", " agent-1 ", " default ")
+	key, err := activeMemoryKey(1, " agent-1 ", " default ")
 	if err != nil {
 		t.Fatalf("activeMemoryKey failed: %v", err)
 	}
-	if key != "gora:active-memory:local:agent-1:default" {
+	if key != "gora:active-memory:1:agent-1:default" {
 		t.Fatalf("unexpected key: %s", key)
 	}
 }

@@ -1,7 +1,9 @@
+// Package domain 定义核心业务领域对象，与数据库模型解耦。
 package domain
 
+// User 是用户领域实体，包含完整的用户信息。
 type User struct {
-	ID       uint   `json:"id"`
+	ID       uint64 `json:"id"`
 	Email    string `json:"email"`
 	Password string `json:"password"`
 	Username string `json:"username"`

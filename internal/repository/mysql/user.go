@@ -1,4 +1,4 @@
-package dao
+package mysql
 
 import (
 	"context"
@@ -12,7 +12,7 @@ type UserDAO interface {
 	Create(ctx context.Context, user *model.User) error
 	Update(ctx context.Context, user *model.User) error
 
-	FindOne(ctx context.Context, opts ...QueryOption) (*model.User, error)
+	FindOne(ctx context.Context, opts ...UserQueryOption) (*model.User, error)
 }
 
 type userDAO struct {
@@ -25,22 +25,23 @@ func NewUserDAO(gorm *gorm.DB) UserDAO {
 	}
 }
 
-// QueryOption 查询条件用 Option 模式
-type QueryOption func(*queryConfig)
-type queryConfig struct {
+// UserQueryOption 查询条件用 Option 模式（与 SessionQueryOption / MessageQueryOption 对齐）。
+type UserQueryOption func(*userQueryConfig)
+
+type userQueryConfig struct {
 	email string
 	id    uint64
 	hasID bool
 }
 
 // ByEmail 按邮箱精确匹配（登录场景用）。
-func ByEmail(email string) QueryOption {
-	return func(c *queryConfig) { c.email = email }
+func ByEmail(email string) UserQueryOption {
+	return func(c *userQueryConfig) { c.email = email }
 }
 
 // ByID 按主键 id 精确匹配。
-func ByID(id uint64) QueryOption {
-	return func(c *queryConfig) {
+func ByID(id uint64) UserQueryOption {
+	return func(c *userQueryConfig) {
 		c.id = id
 		c.hasID = true
 	}
@@ -61,8 +62,8 @@ func (u *userDAO) Update(ctx context.Context, user *model.User) error {
 // 没有任何条件时直接返回 (nil, nil)，避免误读全表第一行；
 // 命中条件但记录不存在时也返回 (nil, nil)，把"不存在"与"出错"区分开，
 // service 层以 "user == nil" 判定不存在即可，不必再 errors.Is。
-func (u *userDAO) FindOne(ctx context.Context, opts ...QueryOption) (*model.User, error) {
-	cfg := &queryConfig{}
+func (u *userDAO) FindOne(ctx context.Context, opts ...UserQueryOption) (*model.User, error) {
+	cfg := &userQueryConfig{}
 	for _, opt := range opts {
 		opt(cfg)
 	}

@@ -12,6 +12,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// parseUserID 从 JWT claims 中解析 uint64 用户 ID。
+func parseUserID(uc ijwt.UserClaims) (uint64, error) {
+	return strconv.ParseUint(uc.UserId, 10, 64)
+}
+
 type UserHandler interface {
 	Register(c *gin.Context, req request.RegisterRequest) (response.Response, error)
 	Login(c *gin.Context, req request.LoginRequest) (response.Response, error)
@@ -86,7 +91,7 @@ func (h *User) Login(c *gin.Context, req request.LoginRequest) (response.Respons
 		return response.Response{}, err
 	}
 
-	token, err := h.jwt.SetJWTToken(strconv.FormatUint(info.ID, 10), info.Email)
+	token, err := h.jwt.SetJWTToken(info.ID, info.Email)
 	if err != nil {
 		return response.Response{}, errs.InternalServerError(err)
 	}
@@ -120,13 +125,13 @@ func (h *User) Login(c *gin.Context, req request.LoginRequest) (response.Respons
 //	@Failure		500				{object}	response.Response									"服务器错误"
 //	@Router			/api/user/profile [post]
 func (h *User) UpdateProfile(c *gin.Context, req request.UpdateProfileRequest, uc ijwt.UserClaims) (response.Response, error) {
-	id, err := strconv.ParseUint(uc.UserId, 10, 64)
+	id, err := parseUserID(uc)
 	if err != nil {
 		return response.Response{}, errs.ErrUserNotFound(err)
 	}
 
 	info, err := h.s.UpdateProfile(c.Request.Context(), &domain.User{
-		ID:       uint(id),
+		ID:       id,
 		Username: req.Username,
 		Password: req.Password,
 	})

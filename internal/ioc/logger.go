@@ -1,7 +1,7 @@
 package ioc
 
 import (
-	"github.com/Serendipity565/gora/internal/config"
+	"github.com/Serendipity565/gora/configs"
 	"github.com/Serendipity565/gora/pkg/logger"
 	"github.com/natefinch/lumberjack"
 	"go.uber.org/zap"
@@ -10,7 +10,7 @@ import (
 
 // InitLogger 根据 cfg 装配 zap + lumberjack 文件切割，并以 logger.Logger 接口返回，
 // 直接给 middleware / 业务层注入。
-func InitLogger(conf config.LogConfig) logger.Logger {
+func InitLogger(conf configs.LogConfig) logger.Logger {
 	level := logger.InfoLevel
 
 	al := zap.NewAtomicLevelAt(level)

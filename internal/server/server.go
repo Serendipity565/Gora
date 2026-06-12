@@ -9,4 +9,5 @@ var ProviderSet = wire.NewSet(
 	NewToolService,
 	NewModelService,
 	NewPermissionService,
+	NewHistoryService,
 )

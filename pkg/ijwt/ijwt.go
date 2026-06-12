@@ -1,3 +1,4 @@
+// Package ijwt 提供基于 HS256 + AES-GCM 的 JWT 令牌管理。
 package ijwt
 
 import (
@@ -9,9 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"time"
 
-	"github.com/Serendipity565/gora/internal/config"
+	"github.com/Serendipity565/gora/configs"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -22,7 +24,7 @@ type JWT struct {
 	encKey        []byte            // 用于加密敏感信息的密钥
 }
 
-func NewJWT(cfg config.JWTConfig) *JWT {
+func NewJWT(cfg configs.JWTConfig) *JWT {
 	expireDuration, err := time.ParseDuration(cfg.Expire)
 	if err != nil {
 		// 默认值或返回错误
@@ -43,8 +45,9 @@ type UserClaims struct {
 	Email  string `json:"email"`
 }
 
-func (j *JWT) SetJWTToken(userId, email string) (string, error) {
-	userIdEnc, err := j.encryptString(userId)
+// SetJWTToken 使用用户 ID 和邮箱生成 JWT 令牌。
+func (j *JWT) SetJWTToken(userId uint64, email string) (string, error) {
+	userIdEnc, err := j.encryptString(strconv.FormatUint(userId, 10))
 	if err != nil {
 		return "", fmt.Errorf("userId 加密失败：%w", err)
 	}

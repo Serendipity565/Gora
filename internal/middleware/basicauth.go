@@ -1,9 +1,8 @@
 package middleware
 
 import (
+	"github.com/Serendipity565/gora/configs"
 	"github.com/gin-gonic/gin"
-
-	appconfig "github.com/Serendipity565/gora/internal/config"
 )
 
 // BasicAuthMiddleware 把 config.Middleware.BasicAuth 列表转成 gin.BasicAuth 凭据。
@@ -12,7 +11,7 @@ type BasicAuthMiddleware struct {
 }
 
 // NewBasicAuthMiddleware 从配置构造 BasicAuthMiddleware；空列表得到一个透传中间件。
-func NewBasicAuthMiddleware(basicUsers []appconfig.BasicAuthAccount) *BasicAuthMiddleware {
+func NewBasicAuthMiddleware(basicUsers []configs.BasicAuthAccount) *BasicAuthMiddleware {
 	accounts := gin.Accounts{}
 	for _, u := range basicUsers {
 		accounts[u.Username] = u.Password

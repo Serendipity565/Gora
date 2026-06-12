@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// RegisterUserRouter 注册用户相关路由：注册、登录、个人信息。
 func RegisterUserRouter(r *gin.RouterGroup, u controller.UserHandler, authMiddleware gin.HandlerFunc) {
 	c := r.Group("/user")
 	{

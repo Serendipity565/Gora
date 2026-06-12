@@ -11,14 +11,16 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 
+	appconfig "github.com/Serendipity565/gora/configs"
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/Serendipity565/gora/internal/agent/core"
 	"github.com/Serendipity565/gora/internal/agent/eino"
 	"github.com/Serendipity565/gora/internal/agent/tool"
-	appconfig "github.com/Serendipity565/gora/internal/config"
-	storage "github.com/Serendipity565/gora/internal/repository"
+	"github.com/Serendipity565/gora/internal/repository"
+	"github.com/Serendipity565/gora/internal/repository/model"
 	"github.com/Serendipity565/gora/internal/server"
 )
 
@@ -33,42 +35,43 @@ import (
 type Runner struct {
 	mu sync.RWMutex
 
-	cfg          appconfig.Config
-	registry     *tool.Registry
-	historyStore storage.ChatHistoryStore
-	modelStore   storage.ModelSelectionStore
-	memoryStore  storage.ActiveMemoryStore
-	userID       string
-	llmIndex     int
-	state        core.State
-	histories    map[string][]*schema.Message
+	cfg         appconfig.Config
+	registry    *tool.Registry
+	sessionDAO  repository.SessionDAO
+	messageDAO  repository.MessageDAO
+	memoryStore repository.ActiveMemoryStore
+	userID      uint64
+	llmIndex    int
+	state       core.State
+	histories   map[string][]*schema.Message
+
+	// sessionLLM 缓存 (session → llm_name) 选择，供 ListModels / SelectModel 使用。
+	// 真正持久化是写在 Session.LLMName 上；这里仅做内存层 fast-path。
+	sessionLLM map[string]string
 }
 
 // New 创建一个 Runner。
 //
-//	llmIndex 是当前会话默认的 LLM 索引；运行时会被 modelStore 中已保存的选择覆盖。
+//	llmIndex 是当前会话默认的 LLM 索引；运行时会被 session.llm_name 覆盖（如果有）。
 func New(
 	cfg appconfig.Config,
 	registry *tool.Registry,
-	modelStore storage.ModelSelectionStore,
-	historyStore storage.ChatHistoryStore,
-	memoryStore storage.ActiveMemoryStore,
+	sessionDAO repository.SessionDAO,
+	messageDAO repository.MessageDAO,
+	memoryStore repository.ActiveMemoryStore,
 	llmIndex int,
 ) *Runner {
-	userID := strings.TrimSpace(cfg.Agent.UserID)
-	if userID == "" {
-		userID = storage.LocalUserID
-	}
 	return &Runner{
-		cfg:          cfg,
-		registry:     registry,
-		modelStore:   modelStore,
-		historyStore: historyStore,
-		memoryStore:  memoryStore,
-		userID:       userID,
-		llmIndex:     llmIndex,
-		state:        core.StateIdle,
-		histories:    make(map[string][]*schema.Message),
+		cfg:         cfg,
+		registry:    registry,
+		sessionDAO:  sessionDAO,
+		messageDAO:  messageDAO,
+		memoryStore: memoryStore,
+		userID:      0,
+		llmIndex:    llmIndex,
+		state:       core.StateIdle,
+		histories:   make(map[string][]*schema.Message),
+		sessionLLM:  make(map[string]string),
 	}
 }
 
@@ -82,7 +85,7 @@ func (r *Runner) State() core.State {
 	return r.state
 }
 
-// Run 使用默认会话执行一轮对话。
+// Run 在调用方未指定 session 的情况下报错——Gora 不再有 "default" 兜底。
 func (r *Runner) Run(ctx context.Context, input string) <-chan core.Event {
 	return r.RunSession(ctx, "", input)
 }
@@ -96,7 +99,12 @@ func (r *Runner) RunSession(ctx context.Context, sessionID, input string) <-chan
 	go func() {
 		defer close(output)
 
-		sessionID = normalizeSessionID(sessionID)
+		sessionID, err := requireSessionID(sessionID)
+		if err != nil {
+			r.setState(core.StateError)
+			output <- core.NewErrorEvent(r.ID(), err)
+			return
+		}
 		llmIndex := r.resolveLLMIndex(ctx, sessionID)
 
 		chatAgent, err := buildChatAgent(ctx, r.cfg, r.registry, llmIndex, nil)
@@ -107,7 +115,7 @@ func (r *Runner) RunSession(ctx context.Context, sessionID, input string) <-chan
 		}
 
 		chatAgent.RestoreHistories(r.snapshotHistories())
-		restoreConversationContext(ctx, io.Discard, io.Discard, r.historyStore, r.memoryStore, r.userID, sessionID, r.cfg, chatAgent)
+		restoreConversationContext(ctx, io.Discard, io.Discard, r.messageDAO, r.memoryStore, r.userID, sessionID, r.cfg, chatAgent)
 		r.setState(core.StateRunning)
 
 		var assistantReply strings.Builder
@@ -135,7 +143,7 @@ func (r *Runner) RunSession(ctx context.Context, sessionID, input string) <-chan
 
 		r.replaceHistories(chatAgent.SnapshotHistories())
 		if gotDone && !gotError {
-			persistConversationTurn(ctx, io.Discard, r.historyStore, r.memoryStore, r.userID, sessionID, r.cfg, llmIndex, input, assistantReply.String(), chatAgent)
+			persistConversationTurn(ctx, io.Discard, r.sessionDAO, r.messageDAO, r.memoryStore, r.userID, sessionID, r.cfg, llmIndex, input, assistantReply.String(), chatAgent, time.Now)
 		}
 		if !gotDone && !gotError {
 			r.setState(core.StateIdle)
@@ -167,8 +175,31 @@ func (r *Runner) LLMIndex() int {
 	return r.llmIndex
 }
 
+// resolveLLMIndex 读取 session 持久化的 llm_name；
+// 找不到则回落到 Runner 默认 llmIndex。
 func (r *Runner) resolveLLMIndex(ctx context.Context, sessionID string) int {
-	return restoreModelSelection(ctx, io.Discard, io.Discard, r.modelStore, r.userID, sessionID, r.cfg)
+	r.mu.RLock()
+	if cached, ok := r.sessionLLM[sessionID]; ok {
+		r.mu.RUnlock()
+		if index, ok := resolveStoredLLMIndex(r.cfg, cached); ok {
+			return index
+		}
+		return r.llmIndex
+	}
+	r.mu.RUnlock()
+
+	session, err := r.sessionDAO.FindOne(ctx, repository.BySessionID(sessionID))
+	if err != nil || session == nil {
+		return r.llmIndex
+	}
+	r.mu.Lock()
+	r.sessionLLM[sessionID] = session.LLMName
+	r.mu.Unlock()
+
+	if index, ok := resolveStoredLLMIndex(r.cfg, session.LLMName); ok {
+		return index
+	}
+	return r.llmIndex
 }
 
 func (r *Runner) snapshotHistories() map[string][]*schema.Message {
@@ -215,23 +246,27 @@ func (r *Runner) ListModels() []server.ModelInfo {
 
 // CurrentModel 返回某 session 当前使用的模型。
 func (r *Runner) CurrentModel(ctx context.Context, sessionID string) (server.ModelInfo, bool, error) {
-	sessionID = normalizeSessionID(sessionID)
-	selection, ok, err := r.modelStore.Get(ctx, r.userID, r.cfg.Agent.ID, sessionID)
+	sessionID, err := requireSessionID(sessionID)
 	if err != nil {
 		return server.ModelInfo{}, false, err
 	}
-	if !ok {
+
+	session, err := r.sessionDAO.FindOne(ctx, repository.BySessionID(sessionID))
+	if err != nil {
+		return server.ModelInfo{}, false, err
+	}
+	if session == nil {
 		return r.modelInfoAt(0), false, nil
 	}
 
-	index, ok := resolveStoredLLMIndex(r.cfg, selection)
+	index, ok := resolveStoredLLMIndex(r.cfg, session.LLMName)
 	if !ok {
 		return r.modelInfoAt(0), false, nil
 	}
 	return r.modelInfoAt(index), true, nil
 }
 
-// SelectModel 把 name 解析为模型并持久化，
+// SelectModel 把 name 解析为模型并持久化到 Session.LLMName，
 // 后续该 session 的 RunSession 会自动读取这一选择。
 //
 // 入参 name 即 LLMConfig.Name；项目约定 name 是模型的唯一标识。
@@ -244,8 +279,27 @@ func (r *Runner) SelectModel(ctx context.Context, sessionID, name string) (serve
 		return server.ModelInfo{}, err
 	}
 
-	sessionID = normalizeSessionID(sessionID)
-	saveModelSelection(ctx, io.Discard, r.modelStore, r.userID, sessionID, r.cfg, index)
+	sessionID, err = requireSessionID(sessionID)
+	if err != nil {
+		return server.ModelInfo{}, err
+	}
+
+	llmConfig := r.cfg.LLM[index]
+	if err := r.sessionDAO.Upsert(ctx, &model.Session{
+		ID:            sessionID,
+		UserID:        r.userID,
+		Title:         "新对话",
+		LLMName:       llmConfig.Name,
+		LastMessageAt: time.Now(),
+		Status:        model.SessionStatusActive,
+	}); err != nil {
+		return server.ModelInfo{}, fmt.Errorf("保存模型选择失败: %w", err)
+	}
+
+	r.mu.Lock()
+	r.sessionLLM[sessionID] = llmConfig.Name
+	r.mu.Unlock()
+
 	return r.modelInfoAt(index), nil
 }
 
@@ -261,13 +315,4 @@ func (r *Runner) modelInfoAt(index int) server.ModelInfo {
 		Model:    llmConfig.Model,
 		Display:  llmConfig.Name,
 	}
-}
-
-// normalizeSessionID 空白 / 空字符串 → eino.DefaultSessionID。
-func normalizeSessionID(sessionID string) string {
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		return eino.DefaultSessionID
-	}
-	return sessionID
 }

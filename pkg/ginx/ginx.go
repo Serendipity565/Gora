@@ -1,3 +1,4 @@
+// Package ginx 提供 Gin 框架的通用工具函数，包括请求包装、claims 处理等。
 package ginx
 
 import (
@@ -11,8 +12,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// CTX 是 gin.Context 中存储 JWT claims 的 key。
 const CTX = "claims"
 
+// WrapSSEClaimsAndReq 将带 JWT claims 和请求体的 SSE 处理函数包装为 gin.HandlerFunc。
+// 自动完成请求绑定、claims 提取、SSE 响应头设置。
 func WrapSSEClaimsAndReq[Req any](fn func(*gin.Context, Req, ijwt.UserClaims) error) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		if len(ctx.Errors) > 0 {
@@ -53,6 +57,7 @@ func WrapSSEClaimsAndReq[Req any](fn func(*gin.Context, Req, ijwt.UserClaims) er
 	}
 }
 
+// WrapSSEReq 将带请求体的 SSE 处理函数包装为 gin.HandlerFunc。
 func WrapSSEReq[Req any](fn func(*gin.Context, Req) error) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		if len(ctx.Errors) > 0 {
@@ -83,6 +88,8 @@ func WrapSSEReq[Req any](fn func(*gin.Context, Req) error) gin.HandlerFunc {
 	}
 }
 
+// WrapClaimsAndReq 将带 JWT claims 和请求体的 JSON 处理函数包装为 gin.HandlerFunc。
+// 自动完成请求绑定、claims 提取、错误转换与 JSON 响应。
 func WrapClaimsAndReq[Req any](fn func(*gin.Context, Req, ijwt.UserClaims) (response.Response, error)) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		//检查前置中间件是否存在错误,如果存在应当直接返回
@@ -127,7 +134,7 @@ func WrapClaimsAndReq[Req any](fn func(*gin.Context, Req, ijwt.UserClaims) (resp
 	}
 }
 
-// WrapReq .
+// WrapReq 将带请求体的 JSON 处理函数包装为 gin.HandlerFunc。
 func WrapReq[Req any](fn func(*gin.Context, Req) (response.Response, error)) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		if len(ctx.Errors) > 0 {
@@ -161,7 +168,7 @@ func WrapReq[Req any](fn func(*gin.Context, Req) (response.Response, error)) gin
 	}
 }
 
-// Wrap .
+// Wrap 将无请求体的 JSON 处理函数包装为 gin.HandlerFunc。
 func Wrap(fn func(*gin.Context) (response.Response, error)) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		if len(ctx.Errors) > 0 {
@@ -185,7 +192,7 @@ func Wrap(fn func(*gin.Context) (response.Response, error)) gin.HandlerFunc {
 	}
 }
 
-// WrapClaims .
+// WrapClaims 将带 JWT claims 的 JSON 处理函数包装为 gin.HandlerFunc。
 func WrapClaims(fn func(*gin.Context, ijwt.UserClaims) (response.Response, error)) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		if len(ctx.Errors) > 0 {
@@ -219,10 +226,12 @@ func WrapClaims(fn func(*gin.Context, ijwt.UserClaims) (response.Response, error
 	}
 }
 
+// SetClaims 将 JWT claims 写入 gin.Context。
 func SetClaims(ctx *gin.Context, claims ijwt.UserClaims) {
 	ctx.Set(CTX, claims)
 }
 
+// GetClaims 从 gin.Context 中读取 JWT claims。
 func GetClaims(ctx *gin.Context) (ijwt.UserClaims, error) {
 	val, ok := ctx.Get(CTX)
 	if !ok {

@@ -1,3 +1,4 @@
+// Package model 定义 GORM 数据库模型。
 package model
 
 import (
@@ -6,6 +7,7 @@ import (
 	"gorm.io/gorm"
 )
 
+// UserStatus 表示用户账户状态。
 type UserStatus uint8
 
 const (
@@ -13,6 +15,7 @@ const (
 	UserStatusDisabled UserStatus = 2 // 禁用
 )
 
+// User 是 GORM 用户表模型。
 type User struct {
 	ID uint64 `gorm:"primaryKey;autoIncrement"`
 

@@ -1,3 +1,4 @@
+// Package controller 定义 HTTP 请求处理器，负责解析参数、调用服务层并返回响应。
 package controller
 
 import "github.com/google/wire"
@@ -9,5 +10,6 @@ var ProviderSet = wire.NewSet(
 	NewTool,
 	NewModel,
 	NewChat,
+	NewHistory,
 	NewHealth,
 )

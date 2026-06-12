@@ -4,6 +4,7 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
+// Level 是 zapcore.Level 的类型别名，对外屏蔽 zap 实现细节。
 type Level = zapcore.Level
 
 const (

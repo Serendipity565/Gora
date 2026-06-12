@@ -1,4 +1,4 @@
-package cache
+package redis
 
 import (
 	"context"
@@ -8,33 +8,30 @@ import (
 	"strings"
 	"time"
 
-	redis "github.com/go-redis/redis/v8"
+	goredis "github.com/go-redis/redis/v8"
 
 	"github.com/Serendipity565/gora/internal/repository/model"
 )
 
 const (
-	// LocalUserID 是缺省 user_id；与 dao.LocalUserID 同义，避免 cache 反向依赖 dao。
-	LocalUserID = "local"
-
 	defaultActiveMemoryTTL = 24 * time.Hour
 )
 
 // ActiveMemoryCache 是 (user, agent, session) 维度的短期记忆存储抽象。
 type ActiveMemoryCache interface {
-	Get(ctx context.Context, userID, agentID, sessionID string) ([]model.ChatMessage, bool, error)
-	Save(ctx context.Context, userID, agentID, sessionID string, messages []model.ChatMessage) error
+	Get(ctx context.Context, userID uint64, agentID, sessionID string) ([]model.Message, bool, error)
+	Save(ctx context.Context, userID uint64, agentID, sessionID string, messages []model.Message) error
 	Close() error
 }
 
 // NoopActiveMemoryCache 在未配置 Redis 时使用，所有操作均无副作用。
 type NoopActiveMemoryCache struct{}
 
-func (NoopActiveMemoryCache) Get(context.Context, string, string, string) ([]model.ChatMessage, bool, error) {
+func (NoopActiveMemoryCache) Get(context.Context, uint64, string, string) ([]model.Message, bool, error) {
 	return nil, false, nil
 }
 
-func (NoopActiveMemoryCache) Save(context.Context, string, string, string, []model.ChatMessage) error {
+func (NoopActiveMemoryCache) Save(context.Context, uint64, string, string, []model.Message) error {
 	return nil
 }
 
@@ -50,7 +47,7 @@ func OpenActiveMemoryCache(ctx context.Context, addr, password string, db int, t
 		ttl = defaultActiveMemoryTTL
 	}
 
-	client := redis.NewClient(&redis.Options{
+	client := goredis.NewClient(&goredis.Options{
 		Addr:     addr,
 		Password: strings.TrimSpace(password),
 		DB:       db,
@@ -67,18 +64,18 @@ func OpenActiveMemoryCache(ctx context.Context, addr, password string, db int, t
 
 // RedisActiveMemoryCache 是基于 go-redis 的实现。
 type RedisActiveMemoryCache struct {
-	client *redis.Client
+	client *goredis.Client
 	ttl    time.Duration
 }
 
-func (s *RedisActiveMemoryCache) Get(ctx context.Context, userID, agentID, sessionID string) ([]model.ChatMessage, bool, error) {
+func (s *RedisActiveMemoryCache) Get(ctx context.Context, userID uint64, agentID, sessionID string) ([]model.Message, bool, error) {
 	key, err := activeMemoryKey(userID, agentID, sessionID)
 	if err != nil {
 		return nil, false, err
 	}
 
 	payload, err := s.client.Get(ctx, key).Bytes()
-	if errors.Is(err, redis.Nil) {
+	if errors.Is(err, goredis.Nil) {
 		return nil, false, nil
 	}
 	if err != nil {
@@ -92,7 +89,7 @@ func (s *RedisActiveMemoryCache) Get(ctx context.Context, userID, agentID, sessi
 	return snapshot.Messages, true, nil
 }
 
-func (s *RedisActiveMemoryCache) Save(ctx context.Context, userID, agentID, sessionID string, messages []model.ChatMessage) error {
+func (s *RedisActiveMemoryCache) Save(ctx context.Context, userID uint64, agentID, sessionID string, messages []model.Message) error {
 	key, err := activeMemoryKey(userID, agentID, sessionID)
 	if err != nil {
 		return err
@@ -117,12 +114,11 @@ func (s *RedisActiveMemoryCache) Close() error {
 }
 
 type activeMemorySnapshot struct {
-	Messages []model.ChatMessage `json:"messages"`
-	SavedAt  time.Time           `json:"saved_at"`
+	Messages []model.Message `json:"messages"`
+	SavedAt  time.Time       `json:"saved_at"`
 }
 
-func activeMemoryKey(userID, agentID, sessionID string) (string, error) {
-	userID = normalizeKey(userID, LocalUserID)
+func activeMemoryKey(userID uint64, agentID, sessionID string) (string, error) {
 	agentID = strings.TrimSpace(agentID)
 	sessionID = strings.TrimSpace(sessionID)
 	if agentID == "" {
@@ -131,13 +127,5 @@ func activeMemoryKey(userID, agentID, sessionID string) (string, error) {
 	if sessionID == "" {
 		return "", fmt.Errorf("session id cannot be empty")
 	}
-	return fmt.Sprintf("gora:active-memory:%s:%s:%s", userID, agentID, sessionID), nil
-}
-
-func normalizeKey(value, fallback string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return fallback
-	}
-	return value
+	return fmt.Sprintf("gora:active-memory:%d:%s:%s", userID, agentID, sessionID), nil
 }

@@ -19,14 +19,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Serendipity565/gora/configs"
 	"github.com/gin-gonic/gin"
 
 	"github.com/Serendipity565/gora/internal/agent/runner"
 	"github.com/Serendipity565/gora/internal/agent/tool"
-	appconfig "github.com/Serendipity565/gora/internal/config"
 	"github.com/Serendipity565/gora/internal/domain"
-	"github.com/Serendipity565/gora/internal/repository/cache"
-	"github.com/Serendipity565/gora/internal/repository/dao"
+	"github.com/Serendipity565/gora/internal/repository"
 	"github.com/Serendipity565/gora/internal/server"
 	"github.com/Serendipity565/gora/pkg/ijwt"
 	"github.com/Serendipity565/gora/pkg/logger"
@@ -35,11 +34,12 @@ import (
 // App 聚合 wire 装配出来的进程级依赖。它由 newApp 产出（参见 wire.go），
 // 字段都用 wire 标签 "*" 自动填充，main.go 只读不写。
 type App struct {
-	Registry *tool.Registry
-	DB       dao.DatabaseStore
-	Cache    cache.ActiveMemoryCache
-	Logger   logger.Logger
-	JWT      *ijwt.JWT
+	Registry   *tool.Registry
+	SessionDAO repository.SessionDAO
+	MessageDAO repository.MessageDAO
+	Cache      repository.ActiveMemoryStore
+	Logger     logger.Logger
+	JWT        *ijwt.JWT
 
 	AgentService server.AgentService
 	ModelService server.ModelService
@@ -48,7 +48,7 @@ type App struct {
 	Router *gin.Engine
 }
 
-var flagConfig = flag.String("config", appconfig.DefaultPath, "Gora YAML 配置文件路径")
+var flagConfig = flag.String("config", configs.DefaultPath, "Gora YAML 配置文件路径")
 
 func main() {
 	flag.Parse()
@@ -62,7 +62,7 @@ func main() {
 func run() error {
 	ctx := context.Background()
 
-	cfg, err := appconfig.Read(*flagConfig)
+	cfg, err := configs.Read(*flagConfig)
 	if err != nil {
 		return fmt.Errorf("加载配置失败: %w", err)
 	}
@@ -77,7 +77,7 @@ func run() error {
 	defer cleanup()
 
 	// Runner 依赖 cfg + 各 store，无法 wire；这里手动 New 后注入到 service。
-	r := runner.New(cfg, app.Registry, app.DB, app.DB, app.Cache, 0)
+	r := runner.New(cfg, app.Registry, app.SessionDAO, app.MessageDAO, app.Cache, 0)
 	chatAgent, err := r.BuildBootstrapAgent(ctx)
 	if err != nil {
 		return fmt.Errorf("创建 Agent 失败: %w", err)

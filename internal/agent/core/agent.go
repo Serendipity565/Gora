@@ -1,3 +1,4 @@
+// Package core 定义 Agent 的核心接口、状态机与事件模型。
 package core
 
 import (
