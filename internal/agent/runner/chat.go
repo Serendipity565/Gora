@@ -24,6 +24,16 @@ type historyCarrier interface {
 	SnapshotHistories() map[string][]*schema.Message
 }
 
+// llmConfigToChatModelConfig 将配置层的 LLMConfig 转换为 LLM 层可用的 ChatModelConfig。
+func llmConfigToChatModelConfig(c appconfig.LLMConfig) llm.ChatModelConfig {
+	return llm.ChatModelConfig{
+		APIStyle: strings.ToLower(strings.TrimSpace(c.APIStyle)),
+		APIKey:   strings.TrimSpace(c.APIKey),
+		BaseURL:  strings.TrimSpace(c.BaseURL),
+		Model:    strings.TrimSpace(c.Model),
+	}
+}
+
 // buildChatAgent 根据 cfg + llmIndex 创建一个 *eino.EinoAgent。
 //
 // previous 不为空时会复制其会话历史到新 Agent（用于切换模型时保留上下文）。
@@ -34,7 +44,7 @@ func buildChatAgent(
 	llmIndex int,
 	previous *eino.EinoAgent,
 ) (*eino.EinoAgent, error) {
-	modelConfig := cfg.LLM[llmIndex].ChatModelConfig()
+	modelConfig := llmConfigToChatModelConfig(cfg.LLM[llmIndex])
 	chatModel, err := llm.NewEinoModel(ctx, modelConfig)
 	if err != nil {
 		return nil, fmt.Errorf("初始化模型失败: %w", err)
