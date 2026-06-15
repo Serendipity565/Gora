@@ -1,7 +1,7 @@
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 
-import type { AgentEvent, ToolInfo } from "./types";
+import type { AgentEvent, MessageItem, SessionItem, ToolInfo } from "./types";
 
 // marked 配置：开启 GFM、把单换行视为 <br>，与 ChatGPT 风格的输出更接近。
 marked.setOptions({
@@ -539,4 +539,116 @@ export function renderConnection(
   if (status === "online") dot.classList.add("online");
   if (status === "error") dot.classList.add("error");
   label.textContent = text;
+}
+
+/* ============================================================
+ * 会话列表 (sidebar) + 历史消息渲染
+ * ========================================================== */
+
+export interface SessionListCallbacks {
+  /** 用户点击某个 session 时触发；activeSessionID 已经在 main 那边切换好。 */
+  onSelect: (session: SessionItem) => void;
+}
+
+/**
+ * 把会话列表渲染到 sidebar。
+ *
+ * - 点击某行触发 cb.onSelect，main 负责切换 currentSessionID 与拉历史；
+ * - activeSessionID 命中的行高亮；
+ * - 空列表显示占位文本。
+ */
+export function renderSessionList(
+  container: HTMLElement,
+  sessions: SessionItem[],
+  activeSessionID: string,
+  cb: SessionListCallbacks,
+): void {
+  if (!sessions.length) {
+    container.innerHTML = `<div class="history-placeholder">暂无历史会话</div>`;
+    return;
+  }
+  container.innerHTML = "";
+  for (const session of sessions) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "history-item";
+    if (session.id === activeSessionID) item.classList.add("active");
+    item.dataset["sessionId"] = session.id;
+
+    const titleText = session.title || "未命名会话";
+    const subtitleText = formatRelativeTime(session.last_message_at) || formatRelativeTime(session.created_at);
+
+    item.innerHTML = `
+      <div class="history-item-title" title="${escapeHtml(titleText)}">${escapeHtml(titleText)}</div>
+      ${subtitleText ? `<div class="history-item-meta">${escapeHtml(subtitleText)}</div>` : ""}
+    `;
+    item.addEventListener("click", () => cb.onSelect(session));
+    container.appendChild(item);
+  }
+}
+
+/** 把列表里某条 session 标记为选中（不重渲染整个列表）。 */
+export function markActiveSession(container: HTMLElement, sessionID: string): void {
+  container.querySelectorAll<HTMLElement>(".history-item").forEach((item) => {
+    item.classList.toggle("active", item.dataset["sessionId"] === sessionID);
+  });
+}
+
+/**
+ * 把后端拉到的历史消息渲染到对话区。
+ *
+ * 与 streamChat 流式输出不同，这里是"一锤子渲染"：
+ * 用户消息照原样转义渲染；assistant 消息按 markdown 解析；
+ * tool / system 暂不显示在主对话流（避免噪音）。
+ */
+export function renderHistoryMessages(
+  container: HTMLElement,
+  messages: MessageItem[],
+): void {
+  clearMessages(container);
+  for (const m of messages) {
+    const role = (m.role || "").toLowerCase();
+    if (role === "user") {
+      appendUserBubble(container, m.content);
+      continue;
+    }
+    if (role === "assistant") {
+      const handle = appendAgentBubble(container, undefined, m.model || m.llm_name);
+      const text = document.createElement("div");
+      text.className = "agent-text";
+      text.innerHTML = renderMarkdown(m.content || "");
+      handle.bubble.appendChild(text);
+      continue;
+    }
+    // system / tool 暂时跳过——不在主对话流中展示。
+  }
+  scrollToBottom(container);
+}
+
+/** 把 ISO8601 时间戳格式化为相对时间（"刚刚 / 5 分钟前 / 昨天 / 3 天前 / MM-DD"）。 */
+function formatRelativeTime(iso: string): string {
+  if (!iso) return "";
+  const ts = Date.parse(iso);
+  if (Number.isNaN(ts)) return "";
+  const now = Date.now();
+  const diff = now - ts;
+  if (diff < 0) return "刚刚";
+  const minute = 60_000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+
+  if (diff < minute) return "刚刚";
+  if (diff < hour) return `${Math.floor(diff / minute)} 分钟前`;
+  if (diff < day) return `${Math.floor(diff / hour)} 小时前`;
+  if (diff < 2 * day) return "昨天";
+  if (diff < 7 * day) return `${Math.floor(diff / day)} 天前`;
+
+  const d = new Date(ts);
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day2 = String(d.getDate()).padStart(2, "0");
+  // 跨年时显示完整日期，避免歧义。
+  if (d.getFullYear() !== new Date().getFullYear()) {
+    return `${d.getFullYear()}-${month}-${day2}`;
+  }
+  return `${month}-${day2}`;
 }

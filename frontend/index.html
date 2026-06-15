@@ -138,7 +138,7 @@
           </button>
         </div>
 
-        <!-- TODO(history): 后端补"列出 session"接口后渲染真实历史；当前只放占位骨架。 -->
+        <!-- 历史会话列表：登录后由 main.ts 拉 GET /api/sessions 渲染。 -->
         <div class="sidebar-section">
           <div class="sidebar-section-title">最近</div>
           <div id="historyList" class="history-list">
@@ -186,7 +186,7 @@
                 type="text"
                 autocomplete="off"
                 spellcheck="false"
-                placeholder="default"
+                placeholder="（新建中）"
               />
             </label>
           </div>

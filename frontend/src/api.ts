@@ -1,5 +1,13 @@
 import { clearSession, getToken } from "./auth";
-import type { AgentEvent, AgentInfo, ChatRequest, ModelInfo, ToolInfo } from "./types";
+import type {
+  AgentEvent,
+  AgentInfo,
+  ChatRequest,
+  MessageItem,
+  ModelInfo,
+  SessionItem,
+  ToolInfo,
+} from "./types";
 
 // dev 环境通过 vite 代理把 /api 转发到 :8080；
 // 生产环境后端会直接 host 静态文件，路径相对即可。
@@ -132,6 +140,66 @@ export async function resolveToolPermission(
     }
     throw new Error(`POST /api/chat/tool-permission 失败: ${res.status} ${detail}`);
   }
+}
+
+/**
+ * 列出当前登录用户的会话，按 last_message_at 倒序。
+ *
+ * 后端鉴权失败（401）会触发 clearSession，由 main.ts 切回登录页。
+ */
+export async function listSessions(
+  limit?: number,
+  offset?: number,
+): Promise<SessionItem[]> {
+  const params = new URLSearchParams();
+  if (limit && limit > 0) params.set("limit", String(limit));
+  if (offset && offset > 0) params.set("offset", String(offset));
+  const url = params.toString()
+    ? `${API_BASE}/api/sessions?${params.toString()}`
+    : `${API_BASE}/api/sessions`;
+  const res = await authFetch(url);
+  if (!res.ok) {
+    throw new Error(`GET /api/sessions 失败: ${res.status}`);
+  }
+  const payload = (await res.json()) as {
+    data?: { sessions?: SessionItem[] };
+    sessions?: SessionItem[];
+  };
+  return payload.data?.sessions ?? payload.sessions ?? [];
+}
+
+/**
+ * 拉取某 session 的消息（按 id 升序）。
+ *
+ * - cursor>0 时返回 id>cursor 的下一页（增量加载）；
+ * - 不传 limit 时由后端用默认值。
+ *
+ * 调用方需保证 sessionID 与登录用户匹配，service 层会再校验一次。
+ */
+export async function listMessages(
+  sessionID: string,
+  cursor?: number,
+  limit?: number,
+): Promise<MessageItem[]> {
+  if (!sessionID) return [];
+  const params = new URLSearchParams();
+  if (cursor && cursor > 0) params.set("cursor", String(cursor));
+  if (limit && limit > 0) params.set("limit", String(limit));
+  const base = `${API_BASE}/api/sessions/${encodeURIComponent(sessionID)}/messages`;
+  const url = params.toString() ? `${base}?${params.toString()}` : base;
+  const res = await authFetch(url);
+  if (res.status === 404) {
+    // 会话不存在或被删除——视作空列表，让 UI 自然展示"暂无消息"。
+    return [];
+  }
+  if (!res.ok) {
+    throw new Error(`GET /api/sessions/${sessionID}/messages 失败: ${res.status}`);
+  }
+  const payload = (await res.json()) as {
+    data?: { messages?: MessageItem[] };
+    messages?: MessageItem[];
+  };
+  return payload.data?.messages ?? payload.messages ?? [];
 }
 
 /**

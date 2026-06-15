@@ -2,7 +2,9 @@ import "./style.css";
 
 import {
   getCurrentModel,
+  listMessages,
   listModels,
+  listSessions,
   listTools,
   resolveToolPermission,
   selectModel,
@@ -11,7 +13,7 @@ import {
 import { clearSession, getUser, isLoggedIn, onAuthChange, setSession } from "./auth";
 import type { AuthUser } from "./auth";
 import { login as apiLogin, register as apiRegister } from "./userApi";
-import type { AgentEvent, ModelInfo } from "./types";
+import type { AgentEvent, ModelInfo, SessionItem } from "./types";
 import {
   appendAgentBubble,
   appendUserBubble,
@@ -19,7 +21,10 @@ import {
   clearMessages,
   enableTool,
   getDisabledTools,
+  markActiveSession,
   renderConnection,
+  renderHistoryMessages,
+  renderSessionList,
   renderToolList,
   scrollToBottomIfPinned,
   setAgentState,
@@ -64,6 +69,7 @@ const toolListEl = document.getElementById("toolList") as HTMLDivElement;
 const modelSelectEl = document.getElementById("modelSelect") as HTMLSelectElement;
 const sessionInputEl = document.getElementById("sessionInput") as HTMLInputElement;
 const btnNewSessionEl = document.getElementById("btnNewSession") as HTMLButtonElement;
+const historyListEl = document.getElementById("historyList") as HTMLDivElement;
 
 const btnThemeEl = document.getElementById("btnTheme") as HTMLButtonElement | null;
 const themeIconEl = document.getElementById("themeIcon") as HTMLSpanElement | null;
@@ -115,6 +121,10 @@ let availableModels: ModelInfo[] = [];
 let currentSessionID = "";
 let currentModelSelector = "";
 let chatBootstrapped = false;
+/** 当前 sidebar 中渲染的 session 列表（按 last_message_at 倒序）。 */
+let sessions: SessionItem[] = [];
+/** 标识"当前对话区显示的是历史消息"，避免欢迎气泡覆盖刚加载的内容。 */
+let historyLoaded = false;
 
 function loadStoredString(key: string): string {
   try {
@@ -258,6 +268,81 @@ function startNewSession(): void {
   resetCounters();
   pushWelcome();
   setAgentState(agentStateEl, "idle");
+  historyLoaded = false;
+  // 新会话还没落库，先在 sidebar 上把高亮挪过去（哪怕这条记录暂时不在列表里）。
+  markActiveSession(historyListEl, currentSessionID);
+}
+
+/* ============================================================
+ * Sidebar 会话列表 + 历史消息
+ * ========================================================== */
+
+/** 重新拉取 session 列表并渲染。失败时静默写日志，不阻塞主流程。 */
+async function refreshSessions(): Promise<void> {
+  try {
+    sessions = await listSessions(50, 0);
+  } catch (err) {
+    console.warn("listSessions 失败", err);
+    sessions = [];
+  }
+  renderSessionList(historyListEl, sessions, currentSessionID, {
+    onSelect: (session) => {
+      void switchToSession(session);
+    },
+  });
+}
+
+/**
+ * 切到某个已存在的 session，加载消息，刷新模型选择。
+ *
+ * 流程：
+ *   1. 取消进行中的 chat 流；
+ *   2. 切 currentSessionID，写回 sessionInput / localStorage；
+ *   3. 拉历史消息，渲染到对话区；
+ *   4. 刷新模型选择（per-session）。
+ */
+async function switchToSession(session: SessionItem): Promise<void> {
+  if (inFlight) {
+    inFlight.abort();
+    inFlight = null;
+  }
+  currentSessionID = session.id;
+  sessionInputEl.value = session.id;
+  saveStoredString(SESSION_STORAGE_KEY, currentSessionID);
+  markActiveSession(historyListEl, currentSessionID);
+
+  resetCounters();
+  setAgentState(agentStateEl, "idle");
+
+  // 先放占位再异步拉，避免点击瞬间画面停滞。
+  clearMessages(messagesEl);
+  const placeholder = document.createElement("div");
+  placeholder.className = "history-loading";
+  placeholder.textContent = "加载历史消息…";
+  messagesEl.appendChild(placeholder);
+
+  try {
+    const messages = await listMessages(session.id, 0, 200);
+    if (messages.length === 0) {
+      // 空 session：保留欢迎气泡，与新会话视觉一致。
+      clearMessages(messagesEl);
+      pushWelcome();
+      historyLoaded = false;
+    } else {
+      renderHistoryMessages(messagesEl, messages);
+      historyLoaded = true;
+    }
+  } catch (err) {
+    console.error("listMessages 失败", err);
+    clearMessages(messagesEl);
+    const errNode = document.createElement("div");
+    errNode.className = "history-loading error";
+    errNode.textContent = `加载历史消息失败：${(err as Error)?.message ?? String(err)}`;
+    messagesEl.appendChild(errNode);
+    historyLoaded = false;
+  }
+
+  void refreshCurrentModel();
 }
 
 /* ============================================================
@@ -308,6 +393,8 @@ async function bootstrapChat(): Promise<void> {
     clearMessages(messagesEl);
     resetCounters();
     pushWelcome();
+    historyLoaded = false;
+    void refreshSessions();
     return;
   }
   chatBootstrapped = true;
@@ -341,6 +428,16 @@ async function bootstrapChat(): Promise<void> {
       "无法连接后端 (默认 :8080)",
     );
     renderToolList(toolListEl, []);
+  }
+
+  // Sidebar 会话列表独立失败：不影响主对话区。
+  // 如果上一次保存的 session 在列表里，自动加载其历史。
+  await refreshSessions();
+  if (currentSessionID) {
+    const matched = sessions.find((s) => s.id === currentSessionID);
+    if (matched) {
+      await switchToSession(matched);
+    }
   }
 }
 
@@ -376,6 +473,12 @@ async function sendMessage(message: string): Promise<void> {
   const trimmed = message.trim();
   if (!trimmed || inFlight) return;
 
+  // 第一条消息会让"加载历史失败"占位等节点占据对话区——发消息前先清掉。
+  if (!historyLoaded) {
+    const stale = messagesEl.querySelector(".history-loading");
+    if (stale) stale.remove();
+  }
+
   appendUserBubble(messagesEl, trimmed);
   userInputEl.value = "";
   autoResize();
@@ -387,6 +490,7 @@ async function sendMessage(message: string): Promise<void> {
   let handle = appendAgentBubble(messagesEl, handleToolPermission, currentModelDisplay());
   inFlight = new AbortController();
 
+  let succeeded = false;
   try {
     const disabledTools = [...getDisabledTools()];
     await streamChat(
@@ -407,6 +511,7 @@ async function sendMessage(message: string): Promise<void> {
         } else if (event.type === "error") {
           setAgentState(agentStateEl, "error");
         } else if (event.type === "done") {
+          succeeded = true;
           setAgentState(agentStateEl, "done");
         }
         // 仅当用户没主动往上翻历史时才贴底；
@@ -433,6 +538,12 @@ async function sendMessage(message: string): Promise<void> {
       setAgentState(agentStateEl, "idle");
     }
     userInputEl.focus();
+  }
+
+  // 这一轮成功落库后，刷新 sidebar——把新会话补进列表 / 把旧会话的时间往前提。
+  if (succeeded) {
+    historyLoaded = true;
+    void refreshSessions();
   }
 }
 
@@ -618,12 +729,33 @@ modelSelectEl.addEventListener("change", () => {
 
 sessionInputEl.addEventListener("change", () => {
   applySessionInput();
-  void refreshCurrentModel();
+  void afterManualSessionChange();
 });
 sessionInputEl.addEventListener("blur", () => {
   applySessionInput();
-  void refreshCurrentModel();
+  void afterManualSessionChange();
 });
+
+/**
+ * 用户手动改了 session 输入框时：
+ *   - 如果新 id 对应 sidebar 里某条已有会话 → 走 switchToSession 加载历史
+ *   - 否则只刷新模型选择，并把 sidebar 的高亮挪过去（哪怕这条还不在列表里）
+ */
+async function afterManualSessionChange(): Promise<void> {
+  const id = currentSessionID;
+  if (!id) {
+    markActiveSession(historyListEl, "");
+    void refreshCurrentModel();
+    return;
+  }
+  const matched = sessions.find((s) => s.id === id);
+  if (matched) {
+    await switchToSession(matched);
+  } else {
+    markActiveSession(historyListEl, id);
+    void refreshCurrentModel();
+  }
+}
 
 btnNewSessionEl.addEventListener("click", () => {
   startNewSession();

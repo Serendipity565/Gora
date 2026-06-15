@@ -231,17 +231,59 @@ textarea:focus-visible {
   font-style: italic;
 }
 
-/* TODO: 真实历史项的样式占位（后端接口就绪后启用） */
+/* sidebar 历史会话项：button reset + 两行布局（标题 + 时间副标题）。 */
 .history-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
   padding: 8px 10px;
+  font: inherit;
   font-size: 13px;
+  text-align: left;
+  background: transparent;
+  border: 0;
   border-radius: var(--radius-sm);
   color: var(--text);
   cursor: pointer;
   transition: background var(--transition);
 }
 .history-item:hover { background: var(--surface-hover); }
-.history-item.active { background: var(--surface-3); font-weight: 500; }
+.history-item.active {
+  background: var(--surface-3);
+  font-weight: 500;
+}
+
+.history-item-title {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+}
+
+.history-item-meta {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  line-height: 1.2;
+}
+
+/* 加载历史 / 加载失败时的对话区占位。 */
+.history-loading {
+  margin: 16px auto;
+  padding: 10px 14px;
+  max-width: 460px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  background: var(--surface-2);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  text-align: center;
+}
+.history-loading.error {
+  color: var(--error);
+  border-color: var(--error);
+  background: transparent;
+}
 
 .sidebar-bottom {
   display: flex;

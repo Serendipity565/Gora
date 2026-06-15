@@ -36,7 +36,7 @@ func newApp(ctx context.Context, cfg configs.Config) (*App, func(), error) {
 	db := ioc.InitMysql(mySQLConfig)
 	v := mysql.NewSessionDAO(db)
 	v2 := mysql.NewMessageDAO(db)
-	activeMemoryCache, cleanup, err := provideActiveMemoryCache(ctx, cfg)
+	v3, cleanup, err := provideActiveMemoryCache(ctx, cfg)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -46,13 +46,13 @@ func newApp(ctx context.Context, cfg configs.Config) (*App, func(), error) {
 	jwt := ijwt.NewJWT(jwtConfig)
 	agentService := server.NewAgentService()
 	modelService := server.NewModelService()
-	v3 := mysql.NewUserDAO(db)
-	userService := server.NewUserService(v3)
+	v4 := mysql.NewUserDAO(db)
+	userService := server.NewUserService(v4)
 	corsConfig := configs.NewCorsConfig(cfg)
 	corsMiddleware := middleware.NewCorsMiddleware(corsConfig)
 	authMiddleware := middleware.NewAuthMiddleware(jwt)
-	v4 := configs.NewBasicAuthAccounts(cfg)
-	basicAuthMiddleware := middleware.NewBasicAuthMiddleware(v4)
+	v5 := configs.NewBasicAuthAccounts(cfg)
+	basicAuthMiddleware := middleware.NewBasicAuthMiddleware(v5)
 	loggerMiddleware := middleware.NewLoggerMiddleware(logger, logConfig)
 	limiterConfig := configs.NewLimiterConfig(cfg)
 	redisConfig := configs.NewRedisConfig(cfg)
@@ -65,8 +65,8 @@ func newApp(ctx context.Context, cfg configs.Config) (*App, func(), error) {
 	modelHandler := controller.NewModel(modelService)
 	permissionService := server.NewPermissionService()
 	chatService := server.NewChatService(agentService, permissionService)
-	v5 := provideChatOptions()
-	chatHandler := controller.NewChat(chatService, permissionService, v5...)
+	v6 := provideChatOptions()
+	chatHandler := controller.NewChat(chatService, permissionService, v6...)
 	historyService := server.NewHistoryService(v, v2)
 	historyHandler := controller.NewHistory(historyService)
 	healthHandler := controller.NewHealth()
@@ -75,7 +75,7 @@ func newApp(ctx context.Context, cfg configs.Config) (*App, func(), error) {
 		Registry:     registry,
 		SessionDAO:   v,
 		MessageDAO:   v2,
-		Cache:        activeMemoryCache,
+		Cache:        v3,
 		Logger:       logger,
 		JWT:          jwt,
 		AgentService: agentService,
@@ -90,11 +90,13 @@ func newApp(ctx context.Context, cfg configs.Config) (*App, func(), error) {
 
 // wire.go:
 
-// provideToolRegistry 创建一个内置工具注册表，并把 HTTP 工具注册进去。
+// provideToolRegistry 创建一个内置工具注册表，并把所有内置工具注册进去。
 func provideToolRegistry() (*tool.Registry, error) {
 	r := tool.NewRegistry()
-	if err := r.Register(builtin.NewHTTPTool()); err != nil {
-		return nil, err
+	for _, t := range []tool.Tool{builtin.NewHTTPTool(), builtin.NewCalculatorTool(), builtin.NewCurrentTimeTool(), builtin.NewWebSearchTool()} {
+		if err := r.Register(t); err != nil {
+			return nil, err
+		}
 	}
 	return r, nil
 }

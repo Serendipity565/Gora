@@ -21,11 +21,18 @@ import (
 	"github.com/Serendipity565/gora/pkg/ijwt"
 )
 
-// provideToolRegistry 创建一个内置工具注册表，并把 HTTP 工具注册进去。
+// provideToolRegistry 创建一个内置工具注册表，并把所有内置工具注册进去。
 func provideToolRegistry() (*tool.Registry, error) {
 	r := tool.NewRegistry()
-	if err := r.Register(builtin.NewHTTPTool()); err != nil {
-		return nil, err
+	for _, t := range []tool.Tool{
+		builtin.NewHTTPTool(),
+		builtin.NewCalculatorTool(),
+		builtin.NewCurrentTimeTool(),
+		builtin.NewWebSearchTool(),
+	} {
+		if err := r.Register(t); err != nil {
+			return nil, err
+		}
 	}
 	return r, nil
 }
