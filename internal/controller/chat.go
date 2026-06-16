@@ -16,6 +16,7 @@ import (
 	"github.com/Serendipity565/gora/internal/agent/core"
 	"github.com/Serendipity565/gora/internal/errs"
 	"github.com/Serendipity565/gora/internal/server"
+	"github.com/Serendipity565/gora/pkg/ijwt"
 )
 
 // 默认的单次对话超时；通过 ChatOption 覆盖。
@@ -27,11 +28,11 @@ const defaultChatTimeout = 5 * time.Minute
 // 由 chat 流注册请求、由 ResolveToolPermission 写回决定），合并管理可避免
 // 双写一个 service handle 又分给两个 handler。
 type ChatHandler interface {
-	// Chat 处理一次 SSE 流式对话；与 ginx.WrapSSEReq 配套使用。
-	Chat(c *gin.Context, req request.Chat) error
+	// Chat 处理一次 SSE 流式对话；与 ginx.WrapSSEClaimsAndReq 配套使用。
+	Chat(c *gin.Context, req request.Chat, claims ijwt.UserClaims) error
 	// ResolveToolPermission 由前端在弹窗中得到用户决定后调用，
 	// 把决定写回正在等待的 Agent goroutine。
-	ResolveToolPermission(c *gin.Context, req request.ToolPermission) (response.Response, error)
+	ResolveToolPermission(c *gin.Context, req request.ToolPermission, claims ijwt.UserClaims) (response.Response, error)
 }
 
 // ChatOption 配置 Chat 实现的可选项。
@@ -83,11 +84,17 @@ func NewChat(chatSvc server.ChatService, permissionSvc server.PermissionService,
 //	@Failure		404	{object}	response.Response	"agent 不存在"
 //	@Router			/api/chat [post]
 //	@Router			/api/chat/{agentId} [post]
-func (h *Chat) Chat(c *gin.Context, req request.Chat) error {
+func (h *Chat) Chat(c *gin.Context, req request.Chat, claims ijwt.UserClaims) error {
+	userID, err := parseUserID(claims)
+	if err != nil {
+		return errs.ErrUserNotFound(err)
+	}
+
 	chatReq := server.ChatRequest{
 		Message:       req.Message,
 		AgentID:       resolveRequestedAgentID(c, req.AgentID),
 		SessionID:     strings.TrimSpace(req.SessionID),
+		UserID:        userID,
 		DisabledTools: req.DisabledTools,
 	}
 
@@ -126,7 +133,7 @@ func (h *Chat) Chat(c *gin.Context, req request.Chat) error {
 //	@Success		200		{object}	response.Response
 //	@Failure		404		{object}	response.Response	"request_id 已过期或不存在"
 //	@Router			/api/chat/tool-permission [post]
-func (h *Chat) ResolveToolPermission(c *gin.Context, req request.ToolPermission) (response.Response, error) {
+func (h *Chat) ResolveToolPermission(c *gin.Context, req request.ToolPermission, _ ijwt.UserClaims) (response.Response, error) {
 	if h.permissionSvc == nil {
 		return response.Response{}, errs.InternalServerError(nil)
 	}

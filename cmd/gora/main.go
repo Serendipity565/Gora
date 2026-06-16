@@ -77,7 +77,7 @@ func run() error {
 	defer cleanup()
 
 	// Runner 依赖 cfg + 各 store，无法 wire；这里手动 New 后注入到 service。
-	r := runner.New(cfg, app.Registry, app.SessionDAO, app.MessageDAO, app.Cache, 0)
+	r := runner.New(cfg, app.Registry, app.SessionDAO, app.MessageDAO, app.Cache, app.Logger, 0)
 	chatAgent, err := r.BuildBootstrapAgent(ctx)
 	if err != nil {
 		return fmt.Errorf("创建 Agent 失败: %w", err)

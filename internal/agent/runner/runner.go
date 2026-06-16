@@ -7,8 +7,8 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"io"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +22,7 @@ import (
 	"github.com/Serendipity565/gora/internal/repository"
 	"github.com/Serendipity565/gora/internal/repository/model"
 	"github.com/Serendipity565/gora/internal/server"
+	"github.com/Serendipity565/gora/pkg/logger"
 )
 
 // Runner 是注册到 AgentService 的多会话 Agent 运行器。
@@ -40,6 +41,7 @@ type Runner struct {
 	sessionDAO  repository.SessionDAO
 	messageDAO  repository.MessageDAO
 	memoryStore repository.ActiveMemoryStore
+	log         logger.Logger
 	userID      uint64
 	llmIndex    int
 	state       core.State
@@ -53,12 +55,14 @@ type Runner struct {
 // New 创建一个 Runner。
 //
 //	llmIndex 是当前会话默认的 LLM 索引；运行时会被 session.llm_name 覆盖（如果有）。
+//	log 用于 trailing 操作（落库 / 短期记忆刷新）的诊断日志。
 func New(
 	cfg appconfig.Config,
 	registry *tool.Registry,
 	sessionDAO repository.SessionDAO,
 	messageDAO repository.MessageDAO,
 	memoryStore repository.ActiveMemoryStore,
+	log logger.Logger,
 	llmIndex int,
 ) *Runner {
 	return &Runner{
@@ -67,6 +71,7 @@ func New(
 		sessionDAO:  sessionDAO,
 		messageDAO:  messageDAO,
 		memoryStore: memoryStore,
+		log:         log,
 		userID:      0,
 		llmIndex:    llmIndex,
 		state:       core.StateIdle,
@@ -87,13 +92,13 @@ func (r *Runner) State() core.State {
 
 // Run 在调用方未指定 session 的情况下报错——Gora 不再有 "default" 兜底。
 func (r *Runner) Run(ctx context.Context, input string) <-chan core.Event {
-	return r.RunSession(ctx, "", input)
+	return r.RunSession(ctx, r.userID, "", input)
 }
 
 // RunSession 在指定 session 中执行一轮对话。
 //
 // 内部流程：解析当前 LLM → 构造一次性 chatAgent → 恢复历史 → 消费事件 → 落库 + 回写短期记忆。
-func (r *Runner) RunSession(ctx context.Context, sessionID, input string) <-chan core.Event {
+func (r *Runner) RunSession(ctx context.Context, userID uint64, sessionID, input string) <-chan core.Event {
 	output := make(chan core.Event, 32)
 
 	go func() {
@@ -115,17 +120,80 @@ func (r *Runner) RunSession(ctx context.Context, sessionID, input string) <-chan
 		}
 
 		chatAgent.RestoreHistories(r.snapshotHistories())
-		restoreConversationContext(ctx, io.Discard, io.Discard, r.messageDAO, r.memoryStore, r.userID, sessionID, r.cfg, chatAgent)
+		restoreConversationContext(ctx, r.log, r.messageDAO, r.memoryStore, userID, sessionID, r.cfg, chatAgent)
 		r.setState(core.StateRunning)
-
 		var assistantReply strings.Builder
 		var gotDone, gotError bool
+		var turnMsgs []model.Message
+
+		// flushAssistant 把当前累积的 assistant 文本落成一条消息并重置；
+		// 用于在 tool 事件前后保持"模型输出 → tool 调用 → tool 结果 → 模型输出"
+		// 的真实时间顺序，而不是把所有 chunk 全部挤到末尾。
+		flushAssistant := func() {
+			if reply := strings.TrimSpace(assistantReply.String()); reply != "" {
+				turnMsgs = append(turnMsgs, model.Message{
+					Role:    model.RoleAssistant,
+					Content: reply,
+				})
+				assistantReply.Reset()
+			}
+		}
+
+		turnMsgs = append(turnMsgs, model.Message{
+			Role:    model.RoleUser,
+			Content: input,
+		})
 
 		for event := range chatAgent.RunSession(ctx, sessionID, input) {
 			switch event.Type {
 			case core.EventToolCall:
 				r.setState(core.StateWaiting)
-			case core.EventThinking, core.EventToolResult, core.EventChunk:
+				flushAssistant()
+				// 把 tool 名 + call_id 也写进 tool_calls JSON，配合 result 行的
+				// {tool, call_id, kind:"result"}，前端可以仅靠这条 JSON 就能：
+				//   1) 区分 call vs result
+				//   2) 按 call_id 精确配对——并发耗时不一致也不会错配
+				meta := map[string]any{
+					"tool": event.Content,
+				}
+				if event.Metadata != nil {
+					if v, ok := event.Metadata["call_id"]; ok {
+						meta["call_id"] = v
+					}
+					if args, ok := event.Metadata["args"]; ok {
+						meta["args"] = args
+					}
+				}
+				argsJSON, _ := json.Marshal(meta)
+				turnMsgs = append(turnMsgs, model.Message{
+					Role:      model.RoleTool,
+					Content:   event.Content,
+					ToolCalls: argsJSON,
+				})
+			case core.EventThinking:
+				r.setState(core.StateRunning)
+			case core.EventToolResult:
+				r.setState(core.StateRunning)
+				// 记下 {tool, call_id, kind:"result"}，前端按 call_id 取
+				// 同一对 call 节点配对（并发场景下严格正确）。
+				resultMetaMap := map[string]any{
+					"kind": "result",
+				}
+				if event.Metadata != nil {
+					if v, ok := event.Metadata["tool"]; ok {
+						resultMetaMap["tool"] = v
+					}
+					if v, ok := event.Metadata["call_id"]; ok {
+						resultMetaMap["call_id"] = v
+					}
+				}
+				resultMeta, _ := json.Marshal(resultMetaMap)
+				turnMsgs = append(turnMsgs, model.Message{
+					Role:      model.RoleTool,
+					Content:   event.Content,
+					ToolCalls: resultMeta,
+				})
+			case core.EventChunk:
 				r.setState(core.StateRunning)
 			case core.EventDone:
 				gotDone = true
@@ -141,9 +209,13 @@ func (r *Runner) RunSession(ctx context.Context, sessionID, input string) <-chan
 			output <- event
 		}
 
+		flushAssistant()
+
 		r.replaceHistories(chatAgent.SnapshotHistories())
 		if gotDone && !gotError {
-			persistConversationTurn(ctx, io.Discard, r.sessionDAO, r.messageDAO, r.memoryStore, r.userID, sessionID, r.cfg, llmIndex, input, assistantReply.String(), chatAgent, time.Now)
+			persistCtx, persistCancel := tailContext(ctx)
+			persistConversationTurn(persistCtx, r.log, r.sessionDAO, r.messageDAO, r.memoryStore, userID, sessionID, r.cfg, llmIndex, turnMsgs, chatAgent, time.Now)
+			persistCancel()
 		}
 		if !gotDone && !gotError {
 			r.setState(core.StateIdle)
@@ -245,7 +317,7 @@ func (r *Runner) ListModels() []server.ModelInfo {
 }
 
 // CurrentModel 返回某 session 当前使用的模型。
-func (r *Runner) CurrentModel(ctx context.Context, sessionID string) (server.ModelInfo, bool, error) {
+func (r *Runner) CurrentModel(ctx context.Context, userID uint64, sessionID string) (server.ModelInfo, bool, error) {
 	sessionID, err := requireSessionID(sessionID)
 	if err != nil {
 		return server.ModelInfo{}, false, err
@@ -270,7 +342,7 @@ func (r *Runner) CurrentModel(ctx context.Context, sessionID string) (server.Mod
 // 后续该 session 的 RunSession 会自动读取这一选择。
 //
 // 入参 name 即 LLMConfig.Name；项目约定 name 是模型的唯一标识。
-func (r *Runner) SelectModel(ctx context.Context, sessionID, name string) (server.ModelInfo, error) {
+func (r *Runner) SelectModel(ctx context.Context, userID uint64, sessionID, name string) (server.ModelInfo, error) {
 	if strings.TrimSpace(name) == "" {
 		return server.ModelInfo{}, fmt.Errorf("模型 name 不能为空")
 	}
@@ -287,7 +359,7 @@ func (r *Runner) SelectModel(ctx context.Context, sessionID, name string) (serve
 	llmConfig := r.cfg.LLM[index]
 	if err := r.sessionDAO.Upsert(ctx, &model.Session{
 		ID:            sessionID,
-		UserID:        r.userID,
+		UserID:        userID,
 		Title:         "新对话",
 		LLMName:       llmConfig.Name,
 		LastMessageAt: time.Now(),

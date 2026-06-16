@@ -17,8 +17,8 @@ type ModelInfo = response.ModelInfo
 // 由上层（典型为 internal/app.Runner）实现。
 type ModelSelector interface {
 	ListModels() []ModelInfo
-	CurrentModel(ctx context.Context, sessionID string) (ModelInfo, bool, error)
-	SelectModel(ctx context.Context, sessionID, selector string) (ModelInfo, error)
+	CurrentModel(ctx context.Context, userID uint64, sessionID string) (ModelInfo, bool, error)
+	SelectModel(ctx context.Context, userID uint64, sessionID, selector string) (ModelInfo, error)
 }
 
 // ModelService 把 ModelSelector 包成业务层接口，供 controller 调用。
@@ -27,8 +27,8 @@ type ModelSelector interface {
 // ErrModelSelectorNotConfigured；上层在创建 Runner 之后用 SetSelector 注入它。
 type ModelService interface {
 	List() ([]ModelInfo, error)
-	Current(ctx context.Context, sessionID string) (ModelInfo, bool, error)
-	Select(ctx context.Context, sessionID, selector string) (ModelInfo, error)
+	Current(ctx context.Context, userID uint64, sessionID string) (ModelInfo, bool, error)
+	Select(ctx context.Context, userID uint64, sessionID, selector string) (ModelInfo, error)
 
 	// SetSelector 注入 / 替换底层的 ModelSelector。
 	// 传 nil 表示清除（后续调用退化为 ErrModelSelectorNotConfigured）。
@@ -65,20 +65,20 @@ func (s *modelServiceImpl) List() ([]ModelInfo, error) {
 	return selector.ListModels(), nil
 }
 
-func (s *modelServiceImpl) Current(ctx context.Context, sessionID string) (ModelInfo, bool, error) {
+func (s *modelServiceImpl) Current(ctx context.Context, userID uint64, sessionID string) (ModelInfo, bool, error) {
 	selector := s.snapshot()
 	if selector == nil {
 		return ModelInfo{}, false, ErrModelSelectorNotConfigured{}
 	}
-	return selector.CurrentModel(ctx, sessionID)
+	return selector.CurrentModel(ctx, userID, sessionID)
 }
 
-func (s *modelServiceImpl) Select(ctx context.Context, sessionID, selector string) (ModelInfo, error) {
+func (s *modelServiceImpl) Select(ctx context.Context, userID uint64, sessionID, selector string) (ModelInfo, error) {
 	current := s.snapshot()
 	if current == nil {
 		return ModelInfo{}, ErrModelSelectorNotConfigured{}
 	}
-	return current.SelectModel(ctx, sessionID, selector)
+	return current.SelectModel(ctx, userID, sessionID, selector)
 }
 
 func (s *modelServiceImpl) snapshot() ModelSelector {

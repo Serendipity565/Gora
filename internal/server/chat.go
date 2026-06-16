@@ -22,7 +22,7 @@ type AgentRunner interface {
 // SessionRunner 是支持多会话的 Agent。
 type SessionRunner interface {
 	AgentRunner
-	RunSession(ctx context.Context, sessionID, input string) <-chan core.Event
+	RunSession(ctx context.Context, userID uint64, sessionID, input string) <-chan core.Event
 }
 
 // EventSink 是 server 把 Agent 事件流回写到外部（典型为 SSE Writer）的抽象。
@@ -36,6 +36,7 @@ type ChatRequest struct {
 	Message       string
 	AgentID       string
 	SessionID     string
+	UserID        uint64
 	DisabledTools []string
 }
 
@@ -84,7 +85,7 @@ func (s *chatServiceImpl) Stream(ctx context.Context, req ChatRequest, sink Even
 
 	var events <-chan core.Event
 	if sessionRunner, ok := a.(SessionRunner); ok {
-		events = sessionRunner.RunSession(ctx, req.SessionID, req.Message)
+		events = sessionRunner.RunSession(ctx, req.UserID, req.SessionID, req.Message)
 	} else {
 		events = a.Run(ctx, req.Message)
 	}

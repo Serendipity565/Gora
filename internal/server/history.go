@@ -114,12 +114,17 @@ func toDomainMessage(m *model.Message) *domain.Message {
 	if m == nil {
 		return nil
 	}
+	var tc string
+	if len(m.ToolCalls) > 0 {
+		tc = string(m.ToolCalls)
+	}
 	return &domain.Message{
 		ID:        m.ID,
 		SessionID: m.SessionID,
 		Seq:       m.Seq,
 		Role:      string(m.Role),
 		Content:   m.Content,
+		ToolCalls: tc,
 		LLMName:   m.LLMName,
 		Model:     m.Model,
 		CreatedAt: m.CreatedAt,

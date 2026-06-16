@@ -8,14 +8,15 @@ import (
 	"github.com/Serendipity565/gora/api/response"
 	"github.com/Serendipity565/gora/internal/errs"
 	"github.com/Serendipity565/gora/internal/server"
+	"github.com/Serendipity565/gora/pkg/ijwt"
 	"github.com/gin-gonic/gin"
 )
 
 // ModelHandler 暴露 /api/models 路由组。
 type ModelHandler interface {
 	List(c *gin.Context) (response.Response, error)
-	Current(c *gin.Context) (response.Response, error)
-	Select(c *gin.Context, req request.ModelSelect) (response.Response, error)
+	Current(c *gin.Context, claims ijwt.UserClaims) (response.Response, error)
+	Select(c *gin.Context, req request.ModelSelect, claims ijwt.UserClaims) (response.Response, error)
 }
 
 type Model struct {
@@ -58,9 +59,14 @@ func (h *Model) List(c *gin.Context) (response.Response, error) {
 //	@Success		200			{object}	response.Response
 //	@Failure		501			{object}	response.Response	"未配置 ModelSelector"
 //	@Router			/api/models/current [get]
-func (h *Model) Current(c *gin.Context) (response.Response, error) {
+func (h *Model) Current(c *gin.Context, claims ijwt.UserClaims) (response.Response, error) {
+	userID, err := parseUserID(claims)
+	if err != nil {
+		return response.Response{}, errs.ErrUserNotFound(err)
+	}
+
 	sessionID := strings.TrimSpace(c.Query("session_id"))
-	info, explicit, err := h.s.Current(c.Request.Context(), sessionID)
+	info, explicit, err := h.s.Current(c.Request.Context(), userID, sessionID)
 	if err != nil {
 		return response.Response{}, mapModelError(err)
 	}
@@ -86,8 +92,13 @@ func (h *Model) Current(c *gin.Context) (response.Response, error) {
 //	@Failure		400		{object}	response.Response
 //	@Failure		501		{object}	response.Response	"未配置 ModelSelector"
 //	@Router			/api/models/select [post]
-func (h *Model) Select(c *gin.Context, req request.ModelSelect) (response.Response, error) {
-	info, err := h.s.Select(c.Request.Context(), strings.TrimSpace(req.SessionID), strings.TrimSpace(req.Selector))
+func (h *Model) Select(c *gin.Context, req request.ModelSelect, claims ijwt.UserClaims) (response.Response, error) {
+	userID, err := parseUserID(claims)
+	if err != nil {
+		return response.Response{}, errs.ErrUserNotFound(err)
+	}
+
+	info, err := h.s.Select(c.Request.Context(), userID, strings.TrimSpace(req.SessionID), strings.TrimSpace(req.Selector))
 	if err != nil {
 		return response.Response{}, mapModelError(err)
 	}

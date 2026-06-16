@@ -15,7 +15,7 @@ import (
 
 // InitMysql 根据 cfg 初始化 MySQL 连接，并返回 *gorm.DB 实例。
 func InitMysql(cfg configs.MySQLConfig) *gorm.DB {
-	dsn := fmt.Sprintf("%s:%s@tcp(%s)/%s?charset=utf8&parseTime=true&loc=Local",
+	dsn := fmt.Sprintf("%s:%s@tcp(%s)/%s?charset=utf8mb4&parseTime=true&loc=Local",
 		cfg.Username, cfg.Password, cfg.Addr, cfg.DBName)
 
 	//logFile, err := os.OpenFile(cfg.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)

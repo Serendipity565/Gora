@@ -143,6 +143,7 @@ func toMessageItem(m *domain.Message) response.MessageItem {
 		Seq:       m.Seq,
 		Role:      m.Role,
 		Content:   m.Content,
+		ToolCalls: m.ToolCalls,
 		LLMName:   m.LLMName,
 		Model:     m.Model,
 		CreatedAt: m.CreatedAt.Format("2006-01-02T15:04:05.000Z07:00"),

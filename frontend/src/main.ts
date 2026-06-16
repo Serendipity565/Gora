@@ -21,12 +21,13 @@ import {
   clearMessages,
   enableTool,
   getDisabledTools,
+  isPinnedToBottom,
   markActiveSession,
   renderConnection,
   renderHistoryMessages,
   renderSessionList,
   renderToolList,
-  scrollToBottomIfPinned,
+  scrollToBottom,
   setAgentState,
   wireCollapsibleSections,
 } from "./ui";
@@ -125,6 +126,16 @@ let chatBootstrapped = false;
 let sessions: SessionItem[] = [];
 /** 标识"当前对话区显示的是历史消息"，避免欢迎气泡覆盖刚加载的内容。 */
 let historyLoaded = false;
+/**
+ * 当前是否粘在对话底部。
+ *
+ * 唯一可靠的来源：messagesEl 自己的 scroll 事件——只要发生用户滚动，
+ * 立刻按当前距离重新判定。流式 mutation 引起的 scrollTop 自动调整不会
+ * 触发 scroll 事件，所以不会误把"程序刚滚到底"识别成"用户离开了底部"。
+ *
+ * 默认 true：刚进入页面 / 切换会话后，应当跟随最新内容滚动。
+ */
+let pinnedToBottom = true;
 
 function loadStoredString(key: string): string {
   try {
@@ -269,6 +280,7 @@ function startNewSession(): void {
   pushWelcome();
   setAgentState(agentStateEl, "idle");
   historyLoaded = false;
+  pinnedToBottom = true;
   // 新会话还没落库，先在 sidebar 上把高亮挪过去（哪怕这条记录暂时不在列表里）。
   markActiveSession(historyListEl, currentSessionID);
 }
@@ -313,6 +325,9 @@ async function switchToSession(session: SessionItem): Promise<void> {
 
   resetCounters();
   setAgentState(agentStateEl, "idle");
+
+  // 切到新 session：滚动条会被新内容重置，先把粘底状态摆正。
+  pinnedToBottom = true;
 
   // 先放占位再异步拉，避免点击瞬间画面停滞。
   clearMessages(messagesEl);
@@ -433,6 +448,7 @@ async function bootstrapChat(): Promise<void> {
   // Sidebar 会话列表独立失败：不影响主对话区。
   // 如果上一次保存的 session 在列表里，自动加载其历史。
   await refreshSessions();
+  wireCollapsibleSections();
   if (currentSessionID) {
     const matched = sessions.find((s) => s.id === currentSessionID);
     if (matched) {
@@ -479,7 +495,13 @@ async function sendMessage(message: string): Promise<void> {
     if (stale) stale.remove();
   }
 
+  // 用户主动发送了消息 → 必然要看到自己刚发的内容和 AI 回复，
+  // 所以这一轮"强制贴底跟随"，先重置粘底状态。
+  pinnedToBottom = true;
+
   appendUserBubble(messagesEl, trimmed);
+  // appendUserBubble 内部会 scrollToBottom，这里再保险一次。
+  scrollToBottom(messagesEl);
   userInputEl.value = "";
   autoResize();
 
@@ -488,6 +510,7 @@ async function sendMessage(message: string): Promise<void> {
   setAgentState(agentStateEl, "running");
 
   let handle = appendAgentBubble(messagesEl, handleToolPermission, currentModelDisplay());
+  scrollToBottom(messagesEl);
   inFlight = new AbortController();
 
   let succeeded = false;
@@ -501,6 +524,10 @@ async function sendMessage(message: string): Promise<void> {
       },
       (event: AgentEvent) => {
         counters.event += 1;
+        // 关键：在 DOM mutation 前采样"是否贴底"——
+        // applyEvent 会向 bubble 里 append 节点，让 scrollHeight 立刻变大，
+        // mutation 后再判 distance 必然误判为"用户已经离开底部"。
+        const wasPinned = pinnedToBottom;
         handle = applyEvent(handle, event, counters);
         updateCounters(counters);
 
@@ -516,7 +543,16 @@ async function sendMessage(message: string): Promise<void> {
         }
         // 仅当用户没主动往上翻历史时才贴底；
         // 否则保持当前阅读位置，避免被流式事件强制拉走。
-        scrollToBottomIfPinned(messagesEl);
+        if (wasPinned) {
+          // 用 rAF 等 mutation 落盘后再贴底，兼容浏览器 scroll 同步时机。
+          requestAnimationFrame(() => {
+            scrollToBottom(messagesEl);
+            // 强制贴底后，把 pinned 状态也校正回 true——
+            // 直接 scrollTop = scrollHeight 不会触发 scroll 事件 listener
+            // 在所有浏览器上都立刻一致，这里手动同步。
+            pinnedToBottom = true;
+          });
+        }
       },
       inFlight.signal,
     );
@@ -782,6 +818,17 @@ btnRightToggleEl?.addEventListener("click", () => {
 window.addEventListener("beforeunload", () => {
   inFlight?.abort();
 });
+
+// 跟踪 messagesEl 的滚动位置：用户每次滚动都重新判定一次"是否贴底"。
+// 只看用户主动滚动；scrollTop = scrollHeight 这种程序性操作有的浏览器
+// 也会触发，但因为我们紧接着会同步 pinnedToBottom，最终结果一致。
+messagesEl.addEventListener(
+  "scroll",
+  () => {
+    pinnedToBottom = isPinnedToBottom(messagesEl);
+  },
+  { passive: true },
+);
 
 /* ============================================================
  * Auth 状态变化：登录后切到 chat 视图，登出回到登录页

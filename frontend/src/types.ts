@@ -78,6 +78,7 @@ export interface MessageItem {
   seq: number;
   role: string;
   content: string;
+  tool_calls?: string;
   llm_name: string;
   model: string;
   created_at: string;

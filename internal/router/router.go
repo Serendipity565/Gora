@@ -48,8 +48,8 @@ func NewEngine(
 	RegisterUserRouter(api, user, authMiddleware.MiddlewareFunc())
 	RegisterAgentRouter(api, agent)
 	RegisterToolRouter(api, tool)
-	RegisterModelRouter(api, model)
-	RegisterChatRouter(api, chat)
+	RegisterModelRouter(api, model, authMiddleware.MiddlewareFunc())
+	RegisterChatRouter(api, chat, authMiddleware.MiddlewareFunc())
 	RegisterSessionRouter(api, history, authMiddleware.MiddlewareFunc())
 
 	// basicAuthMiddleware 暂未挂载到任何路由（预留给未来 /metrics 等运维端点）。

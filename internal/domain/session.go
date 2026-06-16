@@ -22,6 +22,7 @@ type Message struct {
 	Seq       uint64    `json:"seq"`
 	Role      string    `json:"role"`
 	Content   string    `json:"content"`
+	ToolCalls string    `json:"tool_calls,omitempty"`
 	LLMName   string    `json:"llm_name"`
 	Model     string    `json:"model"`
 	CreatedAt time.Time `json:"created_at"`

@@ -476,8 +476,12 @@ func (g *goraInvokableTool) InvokableRun(ctx context.Context, argumentsInJSON st
 		// 用户允许后继续走正常执行路径。
 	}
 
+	// 给这一对 call/result 生成唯一 ID，前端据此配对，避免并发执行
+	// 时多次同名调用按 tool 名 FIFO 错配（callA / callB / resultB / resultA）。
+	callID := core.NewRequestID()
+
 	if payload, ok := getToolEventEmitter(ctx); ok {
-		if !payload.emit(core.NewToolCallEvent(payload.agentID, g.tool.Name(), args)) {
+		if !payload.emit(core.NewToolCallEvent(payload.agentID, callID, g.tool.Name(), args)) {
 			return "", context.Canceled
 		}
 	}
@@ -489,7 +493,7 @@ func (g *goraInvokableTool) InvokableRun(ctx context.Context, argumentsInJSON st
 	}
 
 	if payload, ok := getToolEventEmitter(ctx); ok {
-		if !payload.emit(core.NewToolResultEvent(payload.agentID, g.tool.Name(), result)) {
+		if !payload.emit(core.NewToolResultEvent(payload.agentID, callID, g.tool.Name(), result)) {
 			return "", context.Canceled
 		}
 	}

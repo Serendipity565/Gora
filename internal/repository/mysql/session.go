@@ -67,7 +67,7 @@ func (s *sessionDAO) Upsert(ctx context.Context, session *model.Session) error {
 	}
 	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"agent_ids", "title", "summary", "llm_name", "last_message_at", "status", "updated_at"}),
+		DoUpdates: clause.AssignmentColumns([]string{"user_id", "agent_ids", "title", "summary", "llm_name", "last_message_at", "status", "updated_at"}),
 	}).Create(session).Error
 }
 

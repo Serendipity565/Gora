@@ -44,13 +44,29 @@ export function scrollToBottom(container: HTMLElement): void {
  * 仅当用户当前已经处于（接近）底部时才滚到底。
  *
  * 用来在流式输出时跟随最新内容；如果用户主动往上翻看历史，就不要再把他拽回底部。
- * 16px 的容差允许行高 / 滚动条精度上的小误差。
+ * 48px 的容差允许行高 / 滚动条精度上的小误差。
+ *
+ * 注意：本函数会在 rAF 中再判一次距离，因此调用方在 DOM 变更前判断"是否已贴底"
+ * 比依赖本函数自己更稳——DOM 变更后 scrollHeight 已经长出来了，距离会突然变大。
  */
-export function scrollToBottomIfPinned(container: HTMLElement, threshold = 16): void {
+export function scrollToBottomIfPinned(container: HTMLElement, threshold = 48): void {
+  requestAnimationFrame(() => {
+    const distance = container.scrollHeight - container.clientHeight - container.scrollTop;
+    if (distance <= threshold) {
+      container.scrollTop = container.scrollHeight;
+    }
+  });
+}
+
+/**
+ * 判断容器当前是否处于（接近）底部。
+ *
+ * 给 main.ts 用来"在 DOM 变更前先采样、变更后据此决定是否贴底"。
+ * 必须在 mutation 前调用，否则 scrollHeight 已经增长，距离失真。
+ */
+export function isPinnedToBottom(container: HTMLElement, threshold = 48): boolean {
   const distance = container.scrollHeight - container.clientHeight - container.scrollTop;
-  if (distance <= threshold) {
-    container.scrollTop = container.scrollHeight;
-  }
+  return distance <= threshold;
 }
 
 /** 清空对话区，开启新会话时调用。 */
@@ -88,6 +104,15 @@ export interface AgentBubbleHandle {
   streamRaw: string;
   /** 收到 tool_permission_request 时调用的回调，由 main 注入。 */
   onPermission?: PermissionHandler;
+  /**
+   * 等待 result 的 tool_call 节点：以后端生成的 call_id 为键，
+   * 一一对应。这是首选配对方式——不受并发耗时差影响。
+   */
+  pendingToolCallsByID: Map<string, HTMLDivElement>;
+  /**
+   * 兜底：没有 call_id 时按 tool 名 FIFO 配对（异常情况下才走这里）。
+   */
+  pendingToolCallsByName: Map<string, HTMLDivElement[]>;
 }
 
 export function appendAgentBubble(
@@ -123,7 +148,14 @@ export function appendAgentBubble(
   wrapper.appendChild(bubble);
   container.appendChild(wrapper);
   scrollToBottom(container);
-  return { bubble, streamTarget: null, streamRaw: "", onPermission };
+  return {
+    bubble,
+    streamTarget: null,
+    streamRaw: "",
+    onPermission,
+    pendingToolCallsByID: new Map<string, HTMLDivElement>(),
+    pendingToolCallsByName: new Map<string, HTMLDivElement[]>(),
+  };
 }
 
 export function appendEventNode(
@@ -176,46 +208,54 @@ export function applyEvent(
       counters.tool += 1;
       const args = event.metadata?.["args"];
       const toolName = event.content ?? "";
-      const argsJSON = args !== undefined ? JSON.stringify(args, null, 2) : "";
-      const summaryPreview = argsJSON ? truncatePreview(argsJSON) : "";
-      const argsBody = argsJSON
-        ? `<pre class="event-collapse-body"><code>${escapeHtml(argsJSON)}</code></pre>`
+      const callID = typeof event.metadata?.["call_id"] === "string"
+        ? (event.metadata!["call_id"] as string)
         : "";
-      appendEventNode(
-        handle.bubble,
-        "event-tool-call event-collapse",
-        `<details class="event-collapse-details">
-           <summary class="event-collapse-summary">
-             <span class="event-collapse-icon" aria-hidden="true">▸</span>
-             <span class="event-collapse-title">🔧 调用工具 <strong>${escapeHtml(toolName)}</strong></span>
-             ${summaryPreview ? `<span class="event-collapse-preview">${escapeHtml(summaryPreview)}</span>` : ""}
-           </summary>
-           ${argsBody}
-         </details>`,
-      );
+      const argsJSON = args !== undefined ? JSON.stringify(args, null, 2) : "";
+      const node = makeToolCallNode(toolName, argsJSON);
+      handle.bubble.appendChild(node);
+      // 优先用 call_id 注册（一对一精确配对，并发耗时不一致也不会错）。
+      // 没有 id 才退回到 tool 名 FIFO（理论上不该走到这里）。
+      if (callID) {
+        handle.pendingToolCallsByID.set(callID, node);
+      } else {
+        const queue = handle.pendingToolCallsByName.get(toolName);
+        if (queue) queue.push(node);
+        else handle.pendingToolCallsByName.set(toolName, [node]);
+      }
       return sealStream(handle);
     }
 
     case "tool_result": {
       const tool = event.metadata?.["tool"];
-      const header = tool
-        ? `📥 工具 <strong>${escapeHtml(String(tool))}</strong> 返回`
-        : "📥 工具返回";
+      const toolName = tool ? String(tool) : "";
+      const callID = typeof event.metadata?.["call_id"] === "string"
+        ? (event.metadata!["call_id"] as string)
+        : "";
       const content = event.content ?? "";
-      const summaryPreview = truncatePreview(content);
-      appendEventNode(
-        handle.bubble,
-        "event-tool-result event-collapse",
-        `<details class="event-collapse-details">
-           <summary class="event-collapse-summary">
-             <span class="event-collapse-icon" aria-hidden="true">▸</span>
-             <span class="event-collapse-title">${header}</span>
-             ${summaryPreview ? `<span class="event-collapse-preview">${escapeHtml(summaryPreview)}</span>` : ""}
-           </summary>
-           <pre class="event-collapse-body">${escapeHtml(content)}</pre>
-         </details>`,
-      );
-      return sealStream(handle);
+
+      // 1. 先 sealStream（封口任何流式段落）——保证下面紧跟着插入的结果块顺序正确。
+      const sealed = sealStream(handle);
+
+      // 2. 找到本次 result 对应的 tool_call 节点。
+      //    优先 call_id 直查；找不到再退到 tool 名 FIFO。
+      let pairedCall: HTMLDivElement | null = null;
+      if (callID) {
+        pairedCall = sealed.pendingToolCallsByID.get(callID) ?? null;
+        if (pairedCall) sealed.pendingToolCallsByID.delete(callID);
+      }
+      if (!pairedCall && toolName) {
+        const queue = sealed.pendingToolCallsByName.get(toolName);
+        if (queue && queue.length > 0) {
+          pairedCall = queue.shift() ?? null;
+          if (queue.length === 0) sealed.pendingToolCallsByName.delete(toolName);
+        }
+      }
+
+      // 3. 创建结果节点（与 call 是兄弟，各自独立折叠），紧贴 call 之后。
+      const resultNode = makeToolResultNode(toolName, content);
+      attachResultAfterCall(sealed.bubble, pairedCall, resultNode);
+      return sealed;
     }
 
     case "tool_permission_request": {
@@ -491,6 +531,9 @@ export function wireCollapsibleSections(root: ParentNode = document): void {
   sections.forEach((section) => {
     const header = section.querySelector<HTMLButtonElement>(".collapsible-header");
     if (!header) return;
+    // 防止重复绑定
+    if (header.dataset["wired"] === "1") return;
+    header.dataset["wired"] = "1";
 
     const sectionKey = section.dataset["section"] ?? "";
     const storageKey = sectionKey ? `gora.collapsed.${sectionKey}` : "";
@@ -601,28 +644,197 @@ export function markActiveSession(container: HTMLElement, sessionID: string): vo
  * 用户消息照原样转义渲染；assistant 消息按 markdown 解析；
  * tool / system 暂不显示在主对话流（避免噪音）。
  */
+/**
+ * 解析一条 role=tool 的历史消息。
+ *
+ * 后端约定（runner.go）每条 tool 行都在 `ToolCalls` JSON 里写：
+ *   call:   {tool, call_id, args}
+ *   result: {tool, call_id, kind: "result"}
+ *
+ * call_id 是把 call 与 result 一一对应的唯一钥匙（前端不依赖到达顺序 / 名字 FIFO）。
+ * tool_calls 缺失或 JSON 损坏的行被视为脏数据，返回 null。
+ */
+function parseToolContent(m: MessageItem): { kind: "call" | "result"; name: string; callID: string; detail: string } | null {
+  if (!m.tool_calls) return null;
+  let meta: Record<string, unknown>;
+  try {
+    meta = JSON.parse(m.tool_calls) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+
+  const toolName = typeof meta["tool"] === "string" ? (meta["tool"] as string) : "";
+  const callID = typeof meta["call_id"] === "string" ? (meta["call_id"] as string) : "";
+  if (meta["kind"] === "result") {
+    return { kind: "result", name: toolName, callID, detail: (m.content || "").trim() };
+  }
+  const args = meta["args"];
+  return {
+    kind: "call",
+    name: toolName,
+    callID,
+    detail: args === undefined ? "" : JSON.stringify(args, null, 2),
+  };
+}
+
 export function renderHistoryMessages(
   container: HTMLElement,
   messages: MessageItem[],
 ): void {
   clearMessages(container);
+
+  // 一个用户提问 + 跟随的 assistant/tool 流是"一个 turn"，
+  // 渲染到同一个 agent 气泡里——和 live 模式视觉一致。
+  // 只有遇到下一条 user 消息才换新气泡。
+  let agentHandle: AgentBubbleHandle | null = null;
+  let pendingTextNode: HTMLDivElement | null = null; // 当前 turn 内最近一段 assistant 文本节点
+  let lastAssistantModel = ""; // 用于第一次开 agentHandle 时给气泡贴模型徽标
+
+  const ensureAgentBubble = (): AgentBubbleHandle => {
+    if (!agentHandle) {
+      agentHandle = appendAgentBubble(container, undefined, lastAssistantModel);
+    }
+    return agentHandle;
+  };
+
   for (const m of messages) {
     const role = (m.role || "").toLowerCase();
+
     if (role === "user") {
+      // 重置 turn：下一条 assistant/tool 会开新 bubble
+      agentHandle = null;
+      pendingTextNode = null;
+      lastAssistantModel = "";
       appendUserBubble(container, m.content);
       continue;
     }
+
+    if (role === "system") {
+      // system 角色不出现在新数据里，跳过即可。
+      continue;
+    }
+
     if (role === "assistant") {
-      const handle = appendAgentBubble(container, undefined, m.model || m.llm_name);
+      // 第一次见到这个 turn 的 assistant 时记下模型名给气泡用
+      if (!agentHandle) {
+        lastAssistantModel = m.model || m.llm_name || "";
+      }
+      const handle = ensureAgentBubble();
       const text = document.createElement("div");
       text.className = "agent-text";
       text.innerHTML = renderMarkdown(m.content || "");
       handle.bubble.appendChild(text);
+      pendingTextNode = text;
       continue;
     }
-    // system / tool 暂时跳过——不在主对话流中展示。
+
+    if (role === "tool") {
+      const handle = ensureAgentBubble();
+      const parsed = parseToolContent(m);
+      if (!parsed) continue;
+
+      if (parsed.kind === "call") {
+        const callNode = makeToolCallNode(parsed.name, parsed.detail);
+        handle.bubble.appendChild(callNode);
+        // 优先按 call_id 注册，没有 id 才退到 tool 名 FIFO（异常路径）。
+        if (parsed.callID) {
+          handle.pendingToolCallsByID.set(parsed.callID, callNode);
+        } else if (parsed.name) {
+          const queue = handle.pendingToolCallsByName.get(parsed.name);
+          if (queue) queue.push(callNode);
+          else handle.pendingToolCallsByName.set(parsed.name, [callNode]);
+        }
+        // tool 块出现 → 当前 assistant 段落已经"封口"，
+        // 下一条 assistant 文本必须新建一个节点（而不是接到旧段落里）。
+        pendingTextNode = null;
+        continue;
+      }
+
+      // result：先按 call_id 直查，缺失才退到 tool 名 FIFO
+      let pairedCall: HTMLDivElement | null = null;
+      if (parsed.callID) {
+        pairedCall = handle.pendingToolCallsByID.get(parsed.callID) ?? null;
+        if (pairedCall) handle.pendingToolCallsByID.delete(parsed.callID);
+      }
+      if (!pairedCall && parsed.name) {
+        const queue = handle.pendingToolCallsByName.get(parsed.name);
+        if (queue && queue.length > 0) {
+          pairedCall = queue.shift() ?? null;
+          if (queue.length === 0) handle.pendingToolCallsByName.delete(parsed.name);
+        }
+      }
+      const resultNode = makeToolResultNode(parsed.name, parsed.detail);
+      attachResultAfterCall(handle.bubble, pairedCall, resultNode);
+      pendingTextNode = null;
+      continue;
+    }
   }
+
+  // 让 lint 看得见这个变量被读过——pendingTextNode 在未来扩展（如把
+  // 紧邻的多条 assistant 合并到同一段落）时是个挂点；这里显式标记一下。
+  void pendingTextNode;
+
   scrollToBottom(container);
+}
+
+/* ============================================================
+ * tool_call / tool_result 节点的"纯构造器"
+ *
+ * 这两个 helper 同时被 live 模式（applyEvent）与历史模式
+ * （renderHistoryMessages）调用——把"长什么样"集中在这里，
+ * 任何视觉调整改一处即可，不会让两条路径渐行渐远。
+ *
+ * 返回的节点尚未挂到 DOM 上，调用方负责 append / insertBefore。
+ * ========================================================== */
+function makeToolCallNode(toolName: string, argsJSON: string): HTMLDivElement {
+  const summaryPreview = argsJSON ? truncatePreview(argsJSON) : "";
+  const argsBody = argsJSON
+    ? `<pre class="event-collapse-body"><code>${escapeHtml(argsJSON)}</code></pre>`
+    : "";
+  const node = document.createElement("div");
+  node.className = "agent-event event-tool-call event-collapse";
+  node.innerHTML = `<details class="event-collapse-details">
+       <summary class="event-collapse-summary">
+         <span class="event-collapse-chevron" aria-hidden="true">▶</span>
+         <span class="event-collapse-badge">调用</span>
+         <span class="event-collapse-title">🔧 <strong>${escapeHtml(toolName)}</strong></span>
+         ${summaryPreview ? `<span class="event-collapse-preview">${escapeHtml(summaryPreview)}</span>` : ""}
+         <span class="event-collapse-hint">点击折叠 / 展开</span>
+       </summary>
+       ${argsBody}
+     </details>`;
+  return node;
+}
+
+function makeToolResultNode(toolName: string, content: string): HTMLDivElement {
+  const summaryPreview = truncatePreview(content);
+  const resultBody = `<pre class="event-collapse-body">${escapeHtml(content)}</pre>`;
+  const label = toolName
+    ? `📥 <strong>${escapeHtml(toolName)}</strong>`
+    : "📥 工具返回";
+  const node = document.createElement("div");
+  node.className = "agent-event event-tool-result event-collapse";
+  node.innerHTML = `<details class="event-collapse-details">
+       <summary class="event-collapse-summary">
+         <span class="event-collapse-chevron" aria-hidden="true">▶</span>
+         <span class="event-collapse-badge result">返回</span>
+         <span class="event-collapse-title">${label}</span>
+         ${summaryPreview ? `<span class="event-collapse-preview">${escapeHtml(summaryPreview)}</span>` : ""}
+         <span class="event-collapse-hint">点击折叠 / 展开</span>
+       </summary>
+       ${resultBody}
+     </details>`;
+  return node;
+}
+
+/** 把 result 节点紧贴对应 call 节点之后插入，并让二者首尾相连。 */
+function attachResultAfterCall(bubble: HTMLDivElement, call: HTMLDivElement | null, result: HTMLDivElement): void {
+  if (call && call.parentNode === bubble) {
+    bubble.insertBefore(result, call.nextSibling);
+    call.classList.add("event-tool-call-paired");
+  } else {
+    bubble.appendChild(result);
+  }
 }
 
 /** 把 ISO8601 时间戳格式化为相对时间（"刚刚 / 5 分钟前 / 昨天 / 3 天前 / MM-DD"）。 */
