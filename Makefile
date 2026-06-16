@@ -10,7 +10,6 @@
 #   make wire            重新生成 cmd/gora/wire_gen.go（修改 ProviderSet 后必须跑）
 
 CONFIG ?= configs/config.yaml
-ADDR   ?= :8080
 
 .PHONY: help server frontend-install frontend-dev frontend-build build test wire
 
@@ -18,7 +17,7 @@ help: ## 显示所有可用目标
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z0-9_-]+:.*?## / { printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
 server: ## 启动后端 Gin API 服务（无 UI，前端请用 frontend-dev）
-	go run ./cmd/gora --config $(CONFIG) --addr $(ADDR)
+	go run ./cmd/gora --config $(CONFIG)
 
 frontend-install: ## 安装前端依赖（首次或依赖变更时运行）
 	cd frontend && npm install

@@ -1,32 +1,96 @@
+# HTTP 服务器配置
+server:
+  addr: ":8080"  # 监听地址；空时默认 :8080
+  cors: true     # 是否启用 CORS 中间件（前端独立 dev server 跨域时建议开）
+
+# LLM 配置：支持多个模型服务
+# api_style 表示 API 风格：openai（OpenAI 兼容接口）或 anthropic（Anthropic 原生接口）
 llm:
   - name: "chat"
-    provider: deepseek
+    api_style: openai
     api_key: "sk-your-api-key"
     base_url: "https://api.deepseek.com"
     model: "deepseek-chat"
   - name: "gpt-4o-mini"
-    provider: openai
+    api_style: openai
     api_key: "your-api-key"
     base_url: "https://api.openai.com/v1"
     model: "gpt-4o-mini"
 
+# Agent 配置：Eino Agent 框架参数
 agent:
-  id: "agent-1"
-  name: "gora-eino-agent"
-  description: "基于 Eino 的 Gora Agent"
-  instruction: "你是一个智能助手，可以使用工具来完成任务。当需要获取外部信息时，请调用合适的工具。当你已经获得足够信息可以回答用户时，请直接给出回答。"
-  max_history_messages: 30
-  max_stream_chunk_runes: 64
+  id: "agent-1"  # Agent 唯一标识
+  name: "gora-eino-agent"  # Agent 显示名称
+  description: "基于 Eino 的 Gora Agent"  # Agent 描述
+  instruction: "你是一个智能助手，可以使用工具来完成任务。当需要获取外部信息时，请调用合适的工具。当你已经获得足够信息可以回答用户时，请直接给出回答。"  # Agent 系统指令
+  max_history_messages: 30  # 对话历史消息数上限（保留最近 N 条）
+  max_stream_chunk_runes: 64  # SSE 流式返回时单次分块的字符数
+  user_id: "local"  # 模型选择 / 历史消息持久化用的 user_id；空时使用 "local"
 
+# admin 账号：启动时如果该 email 不存在则按下面字段创建（密码会被 bcrypt 加密入库）；
+# 已存在则跳过，不会覆盖现有密码。三个字段任一为空都视为"不 seed"。
+admin:
+  email: "admin@gora.local"
+  username: "admin"
+  password: "admin123456"
+
+# 数据库与缓存配置
 database:
   mysql:
-    addr: "localhost:3306"
-    dbname: "gora"
-    username: "gora"
-    password: "gora_dev_password"
+    addr: "localhost:3306"  # MySQL 服务器地址（建议使用环境变量 GORA_DATABASE_URL 覆盖）
+    dbname: "gora"  # 数据库名称
+    username: "gora"  # 用户名
+    password: "gora_dev_password"  # 密码（不要提交真实密码，使用环境变量覆盖）
+    max_open_conns: 50  # 数据库连接池最大打开连接数
+    max_idle_conns: 10  # 数据库连接池最大空闲连接数
+    conn_max_lifetime: 1h  # 数据库连接最大生命周期
 
   redis:
-    addr: "localhost:6379"
-    password: "gora_dev_redis_password"
-    db: 0
-    short_term_ttl: "24h"
+    addr: "localhost:6379"  # Redis 服务器地址（建议使用环境变量 GORA_REDIS_ADDR 覆盖）
+    password: "gora_dev_redis_password"  # Redis 密码（可选，不要提交真实密码）
+    db: 0  # Redis 数据库索引
+
+# 中间件配置
+middleware:
+  # JWT 鉴权：保护 /api/secure/* 路由组。secret 为空或未配置时禁用 JWT 鉴权。
+  jwt:
+    secret: "please-change-me-to-a-32-byte-secret"  # JWT 签名密钥（务必修改为 32 字节的随机值）
+    enc_key: "gora"  # JWT 发行者标识
+    expire: 2592000  # Token 过期时间
+
+  # HTTP Basic Auth：保护运维端点（如 /metrics）。空数组时跳过 Basic Auth。
+  basic_auth:
+    - username: "ops"  # 运维账号
+      password: "ops_dev_password"  # 密码（不要提交真实密码，使用环境变量覆盖）
+
+  # Redis 令牌桶限流：三项任一为 0 时禁用限流。
+  limiter:
+    capacity: 100  # 令牌桶容量（最多允许并发请求数）
+    fill_interval: 10  # 每秒补充令牌的次数
+    quantum: 10  # 每次补充的令牌数
+
+  # 访问日志：level ∈ {debug, info, warn, error}；skip_paths 列出不打日志的精确路径。
+  # file/max_* 与 zap+lumberjack 文件切割对接，由 ioc.InitLogger 直接消费。
+  log:
+    level: "info"  # 日志级别
+    skip_paths:  # 不记录访问日志的路径列表
+      - "/health"  # 健康检查端点
+      - "/metrics"  # Prometheus 指标端点
+    file: "logs/gora.log"  # 日志落盘路径（相对工作目录）
+    max_size: 100  # 单文件触发切割的大小（MB）
+    max_backups: 7  # 保留旧文件的最大个数
+    max_age: 30  # 保留旧文件的最大天数
+    compress: true  # 是否压缩旧文件
+
+  # CORS 跨域配置：
+  cors:
+    allowed_origins:
+      - "*"  # 允许所有来源访问（生产环境建议指定具体域名）
+    allowed_methods:
+      - GET
+      - POST
+      - PUT
+      - DELETE
+    allowed_headers:
+      - Content-Type
+      - Authorization

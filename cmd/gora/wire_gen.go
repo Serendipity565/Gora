@@ -8,40 +8,113 @@ package main
 
 import (
 	"context"
-	"github.com/Serendipity565/gora/internal/app"
-	"github.com/Serendipity565/gora/internal/config"
+	"github.com/Serendipity565/gora/configs"
+	"github.com/Serendipity565/gora/internal/agent/tool"
+	"github.com/Serendipity565/gora/internal/agent/tool/builtin"
+	"github.com/Serendipity565/gora/internal/controller"
 	"github.com/Serendipity565/gora/internal/ioc"
+	"github.com/Serendipity565/gora/internal/middleware"
+	"github.com/Serendipity565/gora/internal/repository/mysql"
+	"github.com/Serendipity565/gora/internal/repository/redis"
+	"github.com/Serendipity565/gora/internal/router"
+	"github.com/Serendipity565/gora/internal/server"
+	"github.com/Serendipity565/gora/pkg/ijwt"
 )
 
 // Injectors from wire.go:
 
-// initInfra 装配运行 Gora 所需的基础设施依赖（工具注册表、MySQL、Redis）。
+// newApp 装配运行 Gora 所需的进程级依赖（基础设施 + middleware + 各业务 service / handler +
+// 路由引擎），打包成 *App 交给 main.go 启动。
 //
-// 与 main.go 同包（kratos 风格）：cmd/gora/main.go 直接调用，再把 *app.Infra 交给 app.Run。
 // 修改任何 ProviderSet 后必须执行 `make wire` 重新生成 cmd/gora/wire_gen.go。
-//
-// 返回的 cleanup 会按 wire 生成的反序依次释放底层资源；调用方应在拿到后立即 defer。
-func initInfra(ctx context.Context, cfg config.Config) (*app.Infra, func(), error) {
-	registry, err := ioc.NewToolRegistry()
+func newApp(ctx context.Context, cfg configs.Config) (*App, func(), error) {
+	registry, err := provideToolRegistry()
 	if err != nil {
 		return nil, nil, err
 	}
-	databaseStore, cleanup, err := ioc.NewMySQL(ctx, cfg)
+	mySQLConfig := configs.NewMysqlConfig(cfg)
+	db := ioc.InitMysql(mySQLConfig)
+	v := mysql.NewSessionDAO(db)
+	v2 := mysql.NewMessageDAO(db)
+	v3, cleanup, err := provideActiveMemoryCache(ctx, cfg)
 	if err != nil {
 		return nil, nil, err
 	}
-	activeMemoryCache, cleanup2, err := ioc.NewRedis(ctx, cfg)
-	if err != nil {
-		cleanup()
-		return nil, nil, err
+	logConfig := configs.NewLogConfig(cfg)
+	logger := ioc.InitLogger(logConfig)
+	jwtConfig := configs.NewJWTConfig(cfg)
+	jwt := ijwt.NewJWT(jwtConfig)
+	agentService := server.NewAgentService()
+	modelService := server.NewModelService()
+	v4 := mysql.NewUserDAO(db)
+	userService := server.NewUserService(v4)
+	corsConfig := configs.NewCorsConfig(cfg)
+	corsMiddleware := middleware.NewCorsMiddleware(corsConfig)
+	authMiddleware := middleware.NewAuthMiddleware(jwt)
+	v5 := configs.NewBasicAuthAccounts(cfg)
+	basicAuthMiddleware := middleware.NewBasicAuthMiddleware(v5)
+	loggerMiddleware := middleware.NewLoggerMiddleware(logger, logConfig)
+	limiterConfig := configs.NewLimiterConfig(cfg)
+	redisConfig := configs.NewRedisConfig(cfg)
+	client := ioc.InitRedis(redisConfig)
+	limitMiddleware := middleware.NewLimitMiddleware(limiterConfig, client)
+	userHandler := controller.NewUser(jwt, userService)
+	agentHandler := controller.NewAgent(agentService)
+	toolService := server.NewToolService(registry)
+	toolHandler := controller.NewTool(toolService)
+	modelHandler := controller.NewModel(modelService)
+	permissionService := server.NewPermissionService()
+	chatService := server.NewChatService(agentService, permissionService)
+	v6 := provideChatOptions()
+	chatHandler := controller.NewChat(chatService, permissionService, v6...)
+	historyService := server.NewHistoryService(v, v2)
+	historyHandler := controller.NewHistory(historyService)
+	healthHandler := controller.NewHealth()
+	engine := router.NewEngine(corsMiddleware, authMiddleware, basicAuthMiddleware, loggerMiddleware, limitMiddleware, userHandler, agentHandler, toolHandler, modelHandler, chatHandler, historyHandler, healthHandler)
+	app := &App{
+		Registry:     registry,
+		SessionDAO:   v,
+		MessageDAO:   v2,
+		Cache:        v3,
+		Logger:       logger,
+		JWT:          jwt,
+		AgentService: agentService,
+		ModelService: modelService,
+		UserService:  userService,
+		Router:       engine,
 	}
-	infra := &app.Infra{
-		Registry: registry,
-		DB:       databaseStore,
-		Cache:    activeMemoryCache,
-	}
-	return infra, func() {
-		cleanup2()
+	return app, func() {
 		cleanup()
 	}, nil
+}
+
+// wire.go:
+
+// provideToolRegistry 创建一个内置工具注册表，并把所有内置工具注册进去。
+func provideToolRegistry() (*tool.Registry, error) {
+	r := tool.NewRegistry()
+	for _, t := range []tool.Tool{builtin.NewHTTPTool(), builtin.NewCalculatorTool(), builtin.NewCurrentTimeTool(), builtin.NewWebSearchTool()} {
+		if err := r.Register(t); err != nil {
+			return nil, err
+		}
+	}
+	return r, nil
+}
+
+// provideActiveMemoryCache 根据 cfg.Database.Redis 创建短期记忆缓存；
+// 未配置 Redis 时退化为 NoopActiveMemoryCache（即不缓存，由数据库历史兜底）。
+func provideActiveMemoryCache(ctx context.Context, cfg configs.Config) (redis.ActiveMemoryCache, func(), error) {
+	rs := cfg.Database.Redis
+	store, err := redis.OpenActiveMemoryCache(ctx, rs.Addr, rs.Password, rs.DB, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	cleanup := func() { _ = store.Close() }
+	return store, cleanup, nil
+}
+
+// provideChatOptions 返回空的 ChatHandler 选项切片。
+// controller.NewChat 的可选项目前没有从配置注入的需求；保留 hook 方便未来扩展。
+func provideChatOptions() []controller.ChatOption {
+	return nil
 }

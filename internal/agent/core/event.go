@@ -18,24 +18,33 @@ func NewThinkingEvent(agentID, content string) Event {
 }
 
 // NewToolCallEvent 创建工具调用事件，并把调用参数写入元数据。
-func NewToolCallEvent(agentID, toolName string, args map[string]any) Event {
+//
+// callID 是该次调用的唯一标识，会同样写到对应 result 事件的 metadata 上，
+// 前端靠 callID 把 call/result 配成对——避免并发耗时不同导致按 tool 名 FIFO 错配。
+func NewToolCallEvent(agentID, callID, toolName string, args map[string]any) Event {
 	return Event{
 		Type:      EventToolCall,
 		AgentID:   agentID,
 		Content:   toolName,
 		Timestamp: time.Now(),
-		Metadata:  map[string]any{"args": args},
+		Metadata: map[string]any{
+			"call_id": callID,
+			"args":    args,
+		},
 	}
 }
 
-// NewToolResultEvent 创建工具返回事件，并记录对应工具名。
-func NewToolResultEvent(agentID, toolName, result string) Event {
+// NewToolResultEvent 创建工具返回事件，记录对应工具名和 callID。
+func NewToolResultEvent(agentID, callID, toolName, result string) Event {
 	return Event{
 		Type:      EventToolResult,
 		AgentID:   agentID,
 		Content:   result,
 		Timestamp: time.Now(),
-		Metadata:  map[string]any{"tool": toolName},
+		Metadata: map[string]any{
+			"call_id": callID,
+			"tool":    toolName,
+		},
 	}
 }
 

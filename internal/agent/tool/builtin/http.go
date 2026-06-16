@@ -1,3 +1,4 @@
+// Package builtin 提供内置工具实现，如 HTTP 请求工具。
 package builtin
 
 import (

@@ -1,3 +1,4 @@
+// Package llm 封装大语言模型的创建与配置。
 package llm
 
 import (
@@ -12,7 +13,7 @@ import (
 
 // ChatModelConfig 是 Gora 使用的统一模型配置。
 type ChatModelConfig struct {
-	Provider string
+	APIStyle string
 	APIKey   string
 	BaseURL  string
 	Model    string

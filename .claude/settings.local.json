@@ -17,7 +17,11 @@
       "Bash(git mv *)",
       "Bash(make wire *)",
       "Bash(make test *)",
-      "Bash(echo \"exit=$?\")"
+      "Bash(echo \"exit=$?\")",
+      "Bash(curl *)",
+      "Bash(wire)",
+      "Bash(ln -s CLAUDE.md AGENTS.md)",
+      "Bash(gofmt *)"
     ]
   }
 }
